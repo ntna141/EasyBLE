@@ -1,0 +1,33 @@
+#pragma once
+
+#if defined(EASYBLE_USE_NIMBLE) && defined(EASYBLE_USE_ARDUINOBLE)
+#error "EasyBLE: define only one of EASYBLE_USE_NIMBLE or EASYBLE_USE_ARDUINOBLE"
+#endif
+
+#if defined(EASYBLE_USE_NIMBLE)
+#define EASYBLE_BACKEND_NIMBLE 1
+#elif defined(EASYBLE_USE_ARDUINOBLE)
+#define EASYBLE_BACKEND_ARDUINOBLE 1
+#elif defined(ARDUINO_ARCH_ESP32)
+#define EASYBLE_BACKEND_NIMBLE 1
+#elif defined(ARDUINO_ARCH_SAMD) || defined(ARDUINO_ARCH_NRF52) ||  \
+    defined(ARDUINO_ARCH_MBED) || defined(ARDUINO_ARCH_RENESAS) || \
+    defined(ARDUINO_ARCH_RP2040) || defined(ARDUINO_ARCH_MEGAAVR)
+#define EASYBLE_BACKEND_ARDUINOBLE 1
+#else
+#error "EasyBLE: unsupported board. Define EASYBLE_USE_NIMBLE or EASYBLE_USE_ARDUINOBLE."
+#endif
+
+#if defined(EASYBLE_BACKEND_NIMBLE)
+#define EASYBLE_BACKEND_NAME "NimBLE"
+#elif defined(EASYBLE_BACKEND_ARDUINOBLE)
+#define EASYBLE_BACKEND_NAME "ArduinoBLE"
+#endif
+
+#ifndef EASYBLE_MAX_PACKET
+#if defined(EASYBLE_BACKEND_NIMBLE)
+#define EASYBLE_MAX_PACKET 182
+#else
+#define EASYBLE_MAX_PACKET 20
+#endif
+#endif

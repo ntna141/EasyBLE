@@ -1,0 +1,11 @@
+.DS_Store
+*.pyc
+__pycache__/
+.pio
+.vscode/
+.idea/
+DerivedData/
+*.xcuserdata
+node_modules/
+.env
+.env.*
