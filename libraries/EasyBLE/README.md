@@ -73,7 +73,7 @@ ACK:      ACK flag | acknowledged sequence | sequence
 
 Sequence numbers are unsigned bytes and wrap from 255 to 0. Acknowledgements are cumulative: acknowledging sequence `N` acknowledges every outstanding frame through `N`. An acknowledgement may be carried by itself or piggybacked on an outgoing data frame.
 
-Both peers use a fixed six-frame receive window. Sending a frame consumes one remote window slot. A peer normally reserves the last slot for a frame carrying an acknowledgement, preventing both directions from filling their windows and deadlocking. Receipt of a cumulative acknowledgement reopens the corresponding slots.
+Both peers use a fixed six-frame receive window. Sending a data frame consumes one remote window slot. ACK-only frames advance the sequence number but do not consume a window slot and are not themselves acknowledged. A peer normally reserves the last slot for a data frame carrying an acknowledgement, preventing both directions from filling their windows and deadlocking. Receipt of a cumulative acknowledgement reopens the corresponding slots.
 
 A peer acknowledges immediately when only one local window slot remains. Otherwise it waits up to 2.5 seconds, allowing the acknowledgement to be piggybacked on outbound data first. After sending the first outstanding frame, the sender waits up to 15 seconds for a cumulative acknowledgement. A partial acknowledgement restarts that deadline; acknowledging the newest outstanding frame stops it. Expiration disconnects the BLE session rather than retransmitting frames.
 

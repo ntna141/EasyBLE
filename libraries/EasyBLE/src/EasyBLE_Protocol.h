@@ -36,8 +36,8 @@ private:
     size_t length = 0;
     size_t offset = 0;
     uint8_t nextSequence = 0;
-    uint8_t oldestUnackedSequence = 0;
-    uint8_t newestUnackedSequence = 0;
+    uint8_t outstandingSequences[ReceiveWindowSize] = {};
+    uint8_t outstandingCount = 0;
     uint8_t remoteWindow = ReceiveWindowSize;
     uint32_t ackDeadline = 0;
     bool active = false;

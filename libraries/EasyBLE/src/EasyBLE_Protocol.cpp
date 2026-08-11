@@ -59,7 +59,7 @@ void EasyBLEProtocol::update() {
       return;
     }
 
-    if (ackIsDue() && canSendFrame(true)) {
+    if (ackIsDue()) {
       sendAckFrame();
     }
     return;
@@ -104,7 +104,7 @@ bool EasyBLEProtocol::receiveFrame(const uint8_t* frame, size_t frameLength,
     return false;
   }
   const uint8_t sequence = frame[cursor++];
-  if (sequence != _rx.nextSequence || _rx.localWindow == 0) {
+  if (sequence != _rx.nextSequence) {
     fail();
     return false;
   }
@@ -116,7 +116,12 @@ bool EasyBLEProtocol::receiveFrame(const uint8_t* frame, size_t frameLength,
     }
 
     acceptAck(acknowledgedSequence);
-    recordReceivedFrame(sequence);
+    _rx.nextSequence++;
+    return false;
+  }
+
+  if (_rx.localWindow == 0) {
+    fail();
     return false;
   }
 
@@ -194,23 +199,35 @@ bool EasyBLEProtocol::isValidAck(uint8_t sequence) const {
     return false;
   }
 
-  const uint8_t distanceFromOldest =
-      static_cast<uint8_t>(sequence - _tx.oldestUnackedSequence);
-  const uint8_t distanceToNewest = static_cast<uint8_t>(
-      _tx.newestUnackedSequence - _tx.oldestUnackedSequence);
-  return distanceFromOldest <= distanceToNewest;
+  for (uint8_t index = 0; index < _tx.outstandingCount; index++) {
+    if (_tx.outstandingSequences[index] == sequence) {
+      return true;
+    }
+  }
+  return false;
 }
 
 void EasyBLEProtocol::acceptAck(uint8_t sequence) {
-  if (sequence == _tx.newestUnackedSequence) {
+  uint8_t acknowledgedCount = 0;
+  while (acknowledgedCount < _tx.outstandingCount) {
+    acknowledgedCount++;
+    if (_tx.outstandingSequences[acknowledgedCount - 1] == sequence) {
+      break;
+    }
+  }
+
+  const uint8_t remaining = _tx.outstandingCount - acknowledgedCount;
+  for (uint8_t index = 0; index < remaining; index++) {
+    _tx.outstandingSequences[index] =
+        _tx.outstandingSequences[index + acknowledgedCount];
+  }
+  _tx.outstandingCount = remaining;
+  _tx.remoteWindow = ReceiveWindowSize - remaining;
+
+  if (remaining == 0) {
     _tx.expectingAck = false;
-    _tx.remoteWindow = ReceiveWindowSize;
     stopAckReceiveTimer();
   } else {
-    _tx.oldestUnackedSequence = static_cast<uint8_t>(sequence + 1);
-    const uint8_t outstanding = static_cast<uint8_t>(
-        _tx.newestUnackedSequence - _tx.oldestUnackedSequence + 1);
-    _tx.remoteWindow = static_cast<uint8_t>(ReceiveWindowSize - outstanding);
     restartAckReceiveTimer();
   }
 }
@@ -246,12 +263,8 @@ bool EasyBLEProtocol::ackIsDue() const {
 }
 
 void EasyBLEProtocol::recordSentFrame(uint8_t sequence) {
-  if (!_tx.expectingAck) {
-    _tx.oldestUnackedSequence = sequence;
-    _tx.expectingAck = true;
-  }
-
-  _tx.newestUnackedSequence = sequence;
+  _tx.outstandingSequences[_tx.outstandingCount++] = sequence;
+  _tx.expectingAck = true;
   _tx.nextSequence++;
   _tx.remoteWindow--;
   startAckReceiveTimer();
@@ -349,7 +362,7 @@ bool EasyBLEProtocol::sendAckFrame() {
     return false;
   }
 
-  recordSentFrame(sequence);
+  _tx.nextSequence++;
   recordAckSent();
   return true;
 }
