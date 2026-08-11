@@ -5,6 +5,7 @@
 #include <ArduinoBLE.h>
 #include "../EasyBLE.h"
 #include "../EasyBLE_UUIDs.h"
+#include "EasyBLE_Backend.h"
 
 static BLEService service(EASYBLE_SERVICE_UUID);
 static BLECharacteristic rxChar(
@@ -16,62 +17,43 @@ static BLECharacteristic txChar(
     BLENotify,
     EASYBLE_MAX_PACKET);
 
-struct EasyBLEBackend {
-  static void setConnected(bool connected) {
-    if (connected == EasyBLE._connected) {
-      return;
-    }
-    EasyBLE._connected = connected;
-    if (connected) {
-      if (EasyBLE._onConnect) {
-        EasyBLE._onConnect();
-      }
-    } else if (EasyBLE._onDisconnect) {
-      EasyBLE._onDisconnect();
-    }
-  }
+namespace {
 
-  static void subscribed(BLEDevice device, BLECharacteristic characteristic) {
-    (void)device;
-    (void)characteristic;
-    setConnected(true);
-  }
+BLEDevice peer;
+bool hasPeer = false;
 
-  static void unsubscribed(BLEDevice device, BLECharacteristic characteristic) {
-    (void)device;
-    (void)characteristic;
-    setConnected(false);
-  }
-
-  static void disconnected(BLEDevice device) {
-    (void)device;
-    setConnected(false);
-  }
-
-  static void rxWritten(BLEDevice device, BLECharacteristic characteristic) {
-    (void)device;
-    const int len = characteristic.valueLength();
-    if (len > 0 && EasyBLE._onData) {
-      EasyBLE._onData(characteristic.value(), static_cast<size_t>(len));
-    }
-  }
-};
-
-void EasyBLEClass::onData(DataHandler handler) {
-  _onData = handler;
+void subscribed(BLEDevice device, BLECharacteristic characteristic) {
+  (void)characteristic;
+  peer = device;
+  hasPeer = true;
+  EasyBLEBackend::didConnect();
 }
 
-void EasyBLEClass::onConnect(ConnectHandler handler) {
-  _onConnect = handler;
+void unsubscribed(BLEDevice device, BLECharacteristic characteristic) {
+  (void)device;
+  (void)characteristic;
+  hasPeer = false;
+  EasyBLEBackend::didDisconnect();
 }
 
-void EasyBLEClass::onDisconnect(DisconnectHandler handler) {
-  _onDisconnect = handler;
+void disconnected(BLEDevice device) {
+  (void)device;
+  hasPeer = false;
+  EasyBLEBackend::didDisconnect();
 }
 
-bool EasyBLEClass::begin(const char* deviceName) {
-  _connected = false;
+void rxWritten(BLEDevice device, BLECharacteristic characteristic) {
+  (void)device;
+  const int length = characteristic.valueLength();
+  if (length > 0) {
+    EasyBLEBackend::didReceiveFrame(
+        characteristic.value(), static_cast<size_t>(length));
+  }
+}
 
+}  // namespace
+
+bool EasyBLEBackend::begin(const char* deviceName) {
   if (!BLE.begin()) {
     return false;
   }
@@ -88,36 +70,41 @@ bool EasyBLEClass::begin(const char* deviceName) {
   BLE.addService(service);
   BLE.setAdvertisedService(service);
 
-  BLE.setEventHandler(BLEDisconnected, EasyBLEBackend::disconnected);
-  rxChar.setEventHandler(BLEWritten, EasyBLEBackend::rxWritten);
-  txChar.setEventHandler(BLESubscribed, EasyBLEBackend::subscribed);
-  txChar.setEventHandler(BLEUnsubscribed, EasyBLEBackend::unsubscribed);
+  BLE.setEventHandler(BLEDisconnected, disconnected);
+  rxChar.setEventHandler(BLEWritten, rxWritten);
+  txChar.setEventHandler(BLESubscribed, subscribed);
+  txChar.setEventHandler(BLEUnsubscribed, unsubscribed);
 
   BLE.advertise();
   return true;
 }
 
-void EasyBLEClass::end() {
+void EasyBLEBackend::end() {
+  hasPeer = false;
   BLE.stopAdvertise();
   BLE.end();
-  _connected = false;
 }
 
-void EasyBLEClass::update() {
+void EasyBLEBackend::poll() {
   BLE.poll();
 }
 
-bool EasyBLEClass::send(const uint8_t* data, size_t len) {
-  if (!_connected || data == nullptr || len == 0 || len > EASYBLE_MAX_PACKET) {
+void EasyBLEBackend::disconnect() {
+  if (hasPeer) {
+    peer.disconnect();
+  }
+}
+
+bool EasyBLEBackend::sendFrame(const uint8_t* frame, size_t length) {
+  if (!EasyBLE._connected || frame == nullptr || length == 0 ||
+      length > maximumFrameSize()) {
     return false;
   }
-  return txChar.writeValue(data, len) != 0;
+  return txChar.writeValue(frame, length) != 0;
 }
 
-bool EasyBLEClass::isConnected() const {
-  return _connected;
+size_t EasyBLEBackend::maximumFrameSize() {
+  return EASYBLE_MAX_PACKET;
 }
-
-EasyBLEClass EasyBLE;
 
 #endif

@@ -10,6 +10,7 @@
 
 #include "../EasyBLE.h"
 #include "../EasyBLE_UUIDs.h"
+#include "EasyBLE_Backend.h"
 
 #ifndef EASYBLE_QUEUE_DEPTH
 #define EASYBLE_QUEUE_DEPTH 16
@@ -27,12 +28,14 @@ NimBLECharacteristic* rxChar = nullptr;
 NimBLECharacteristic* txChar = nullptr;
 QueueHandle_t eventQueue = nullptr;
 std::atomic<bool> peerReady{false};
+std::atomic<uint16_t> peerConnectionHandle{0};
 
 class ServerCallbacks : public NimBLEServerCallbacks {
   void onDisconnect(NimBLEServer* bleServer, NimBLEConnInfo& connInfo, int reason) override {
     (void)bleServer;
     (void)connInfo;
     (void)reason;
+    peerConnectionHandle = 0;
     peerReady = false;
   }
 };
@@ -53,11 +56,7 @@ class RxCallbacks : public NimBLECharacteristicCallbacks {
     Event event;
     event.length = static_cast<uint16_t>(len);
     memcpy(event.data, value.data(), len);
-    if (xQueueSend(eventQueue, &event, 0) != pdTRUE) {
-      Event discarded;
-      xQueueReceive(eventQueue, &discarded, 0);
-      xQueueSend(eventQueue, &event, 0);
-    }
+    xQueueSend(eventQueue, &event, 0);
   }
 };
 
@@ -65,7 +64,7 @@ class TxCallbacks : public NimBLECharacteristicCallbacks {
   void onSubscribe(NimBLECharacteristic* characteristic, NimBLEConnInfo& connInfo,
                    uint16_t subValue) override {
     (void)characteristic;
-    (void)connInfo;
+    peerConnectionHandle = connInfo.getConnHandle();
     peerReady = subValue != 0;
   }
 };
@@ -76,20 +75,7 @@ TxCallbacks txCallbacks;
 
 }  // namespace
 
-void EasyBLEClass::onData(DataHandler handler) {
-  _onData = handler;
-}
-
-void EasyBLEClass::onConnect(ConnectHandler handler) {
-  _onConnect = handler;
-}
-
-void EasyBLEClass::onDisconnect(DisconnectHandler handler) {
-  _onDisconnect = handler;
-}
-
-bool EasyBLEClass::begin(const char* deviceName) {
-  _connected = false;
+bool EasyBLEBackend::begin(const char* deviceName) {
   peerReady = false;
 
   if (eventQueue == nullptr) {
@@ -132,7 +118,7 @@ bool EasyBLEClass::begin(const char* deviceName) {
   return true;
 }
 
-void EasyBLEClass::end() {
+void EasyBLEBackend::end() {
   if (server != nullptr) {
     NimBLEDevice::stopAdvertising();
     NimBLEDevice::deinit(true);
@@ -140,52 +126,49 @@ void EasyBLEClass::end() {
   server = nullptr;
   rxChar = nullptr;
   txChar = nullptr;
-  _connected = false;
+  peerConnectionHandle = 0;
   peerReady = false;
   if (eventQueue != nullptr) {
     xQueueReset(eventQueue);
   }
 }
 
-void EasyBLEClass::update() {
+void EasyBLEBackend::poll() {
   const bool ready = peerReady.load();
-  if (ready && !_connected) {
-    _connected = true;
-    if (_onConnect) {
-      _onConnect();
-    }
+  if (ready && !EasyBLE._connected) {
+    didConnect();
   }
 
   if (eventQueue != nullptr) {
     Event event;
     while (xQueueReceive(eventQueue, &event, 0) == pdTRUE) {
-      if (_onData) {
-        _onData(event.data, event.length);
-      }
+      didReceiveFrame(event.data, event.length);
     }
   }
 
-  if (!ready && _connected) {
-    _connected = false;
-    if (_onDisconnect) {
-      _onDisconnect();
-    }
+  if (!ready && EasyBLE._connected) {
+    didDisconnect();
   }
 }
 
-bool EasyBLEClass::send(const uint8_t* data, size_t len) {
-  if (!_connected || txChar == nullptr || data == nullptr || len == 0 ||
-      len > EASYBLE_MAX_PACKET) {
+void EasyBLEBackend::disconnect() {
+  const uint16_t connectionHandle = peerConnectionHandle.load();
+  if (server != nullptr && peerReady.load()) {
+    server->disconnect(connectionHandle);
+  }
+}
+
+bool EasyBLEBackend::sendFrame(const uint8_t* frame, size_t length) {
+  if (!EasyBLE._connected || txChar == nullptr || frame == nullptr ||
+      length == 0 || length > maximumFrameSize()) {
     return false;
   }
-  txChar->setValue(data, len);
+  txChar->setValue(frame, length);
   return txChar->notify();
 }
 
-bool EasyBLEClass::isConnected() const {
-  return _connected;
+size_t EasyBLEBackend::maximumFrameSize() {
+  return EASYBLE_MAX_PACKET;
 }
-
-EasyBLEClass EasyBLE;
 
 #endif

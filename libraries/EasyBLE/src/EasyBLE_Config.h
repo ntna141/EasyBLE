@@ -31,3 +31,23 @@
 #define EASYBLE_MAX_PACKET 20
 #endif
 #endif
+
+#ifndef EASYBLE_MAX_MESSAGE
+#if defined(EASYBLE_BACKEND_NIMBLE)
+#define EASYBLE_MAX_MESSAGE 4096
+#else
+#define EASYBLE_MAX_MESSAGE 1024
+#endif
+#endif
+
+#if EASYBLE_MAX_PACKET < 6
+#error "EasyBLE: EASYBLE_MAX_PACKET must leave room for a frame header and payload"
+#endif
+
+#if EASYBLE_MAX_MESSAGE < 1
+#error "EasyBLE: EASYBLE_MAX_MESSAGE must be at least 1"
+#endif
+
+#if EASYBLE_MAX_MESSAGE > 65535
+#error "EasyBLE: EASYBLE_MAX_MESSAGE must fit in the protocol's 16-bit message length"
+#endif
