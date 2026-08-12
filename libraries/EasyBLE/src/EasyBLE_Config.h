@@ -1,53 +1,11 @@
 #pragma once
 
-#if defined(EASYBLE_USE_NIMBLE) && defined(EASYBLE_USE_ARDUINOBLE)
-#error "EasyBLE: define only one of EASYBLE_USE_NIMBLE or EASYBLE_USE_ARDUINOBLE"
+#include <stdint.h>
+
+#if !defined(ARDUINO_ARCH_ESP32)
+#error "EasyBLE: only ESP32 boards using NimBLE-Arduino are currently supported"
 #endif
 
-#if defined(EASYBLE_USE_NIMBLE)
-#define EASYBLE_BACKEND_NIMBLE 1
-#elif defined(EASYBLE_USE_ARDUINOBLE)
-#define EASYBLE_BACKEND_ARDUINOBLE 1
-#elif defined(ARDUINO_ARCH_ESP32)
-#define EASYBLE_BACKEND_NIMBLE 1
-#elif defined(ARDUINO_ARCH_SAMD) || defined(ARDUINO_ARCH_NRF52) ||  \
-    defined(ARDUINO_ARCH_MBED) || defined(ARDUINO_ARCH_RENESAS) || \
-    defined(ARDUINO_ARCH_RP2040) || defined(ARDUINO_ARCH_MEGAAVR)
-#define EASYBLE_BACKEND_ARDUINOBLE 1
-#else
-#error "EasyBLE: unsupported board. Define EASYBLE_USE_NIMBLE or EASYBLE_USE_ARDUINOBLE."
-#endif
-
-#if defined(EASYBLE_BACKEND_NIMBLE)
-#define EASYBLE_BACKEND_NAME "NimBLE"
-#elif defined(EASYBLE_BACKEND_ARDUINOBLE)
-#define EASYBLE_BACKEND_NAME "ArduinoBLE"
-#endif
-
-#ifndef EASYBLE_MAX_PACKET
-#if defined(EASYBLE_BACKEND_NIMBLE)
-#define EASYBLE_MAX_PACKET 182
-#else
-#define EASYBLE_MAX_PACKET 20
-#endif
-#endif
-
-#ifndef EASYBLE_MAX_MESSAGE
-#if defined(EASYBLE_BACKEND_NIMBLE)
-#define EASYBLE_MAX_MESSAGE 4096
-#else
-#define EASYBLE_MAX_MESSAGE 1024
-#endif
-#endif
-
-#if EASYBLE_MAX_PACKET < 6
-#error "EasyBLE: EASYBLE_MAX_PACKET must leave room for a frame header and payload"
-#endif
-
-#if EASYBLE_MAX_MESSAGE < 1
-#error "EasyBLE: EASYBLE_MAX_MESSAGE must be at least 1"
-#endif
-
-#if EASYBLE_MAX_MESSAGE > 65535
-#error "EasyBLE: EASYBLE_MAX_MESSAGE must fit in the protocol's 16-bit message length"
-#endif
+constexpr uint32_t EasyBLEDefaultMaxMessage = 4096;
+constexpr uint32_t EasyBLEMinimumMaxMessage = 256;
+constexpr uint32_t EasyBLEResultTimeoutMs = 15000;
