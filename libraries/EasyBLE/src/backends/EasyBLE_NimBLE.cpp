@@ -65,7 +65,8 @@ NimBLEStream::RxOverflowAction onRxOverflow(const uint8_t*, size_t, void*) {
 
 }  // namespace
 
-bool EasyBLEBackend::begin(const char* deviceName, uint32_t bufferSize) {
+bool EasyBLEBackend::begin(const char* deviceName, uint32_t txBufferSize,
+                           uint32_t rxBufferSize) {
   rxOverflowed = false;
   sessionEnded = false;
 
@@ -77,8 +78,8 @@ bool EasyBLEBackend::begin(const char* deviceName, uint32_t bufferSize) {
   server->advertiseOnDisconnect(true);
 
   if (!streamServer.begin(NimBLEUUID(EASYBLE_SERVICE_UUID),
-                          NimBLEUUID(EASYBLE_STREAM_UUID), bufferSize,
-                          bufferSize, false)) {
+                          NimBLEUUID(EASYBLE_STREAM_UUID), txBufferSize,
+                          rxBufferSize, false)) {
     NimBLEDevice::deinit(true);
     return false;
   }
@@ -106,15 +107,21 @@ void EasyBLEBackend::end() {
 }
 
 void EasyBLEBackend::poll() {
+  // If the session died without the disconnect callback firing, a stale
+  // overflow flag must not outlive it and block future sessions.
+  if (rxInvalid() && !ready()) {
+    endSession();
+  }
+
+  if (sessionEnded.exchange(false)) {
+    didDisconnect();
+  }
+
   if (rxInvalid()) {
     if (!EasyBLE._failed) {
       EasyBLE.fail();
     }
     return;
-  }
-
-  if (sessionEnded.exchange(false)) {
-    didDisconnect();
   }
 
   if (ready() && !EasyBLE._connected) {

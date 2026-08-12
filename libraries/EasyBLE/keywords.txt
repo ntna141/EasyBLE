@@ -1,13 +1,16 @@
 EasyBLE	KEYWORD1
 EasyBLEClass	KEYWORD1
+EasyBLEMessage	KEYWORD1
+EasyBLEMessageType	KEYWORD1
 
 begin	KEYWORD2
 end	KEYWORD2
 update	KEYWORD2
-onData	KEYWORD2
+onReceive	KEYWORD2
 onConnect	KEYWORD2
 onDisconnect	KEYWORD2
 onSendResult	KEYWORD2
 send	KEYWORD2
+sendText	KEYWORD2
 isSending	KEYWORD2
 isConnected	KEYWORD2

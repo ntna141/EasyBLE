@@ -3,9 +3,22 @@
 #include <Arduino.h>
 #include "EasyBLE_Config.h"
 
+enum class EasyBLEMessageType : uint8_t {
+  Text = 0x01,
+  Image = 0x02,
+};
+
+struct EasyBLEMessage {
+  EasyBLEMessageType type;
+  // The payload remains valid only for the duration of the receive callback.
+  // It is always NUL-terminated, so Text payloads can be used as a C string.
+  const uint8_t* data;
+  size_t length;
+};
+
 class EasyBLEClass {
 public:
-  using DataHandler = void (*)(const uint8_t* data, size_t len);
+  using ReceiveHandler = void (*)(const EasyBLEMessage& message);
   using ConnectHandler = void (*)();
   using DisconnectHandler = void (*)();
   using SendResultHandler = void (*)(bool success);
@@ -15,12 +28,13 @@ public:
   void end();
   void update();
 
-  void onData(DataHandler handler);
+  void onReceive(ReceiveHandler handler);
   void onConnect(ConnectHandler handler);
   void onDisconnect(DisconnectHandler handler);
   void onSendResult(SendResultHandler handler);
 
-  bool send(const uint8_t* data, size_t len);
+  bool send(EasyBLEMessageType type, const uint8_t* data, size_t length);
+  bool sendText(const char* text);
   bool isSending() const;
   bool isConnected() const;
 
@@ -29,6 +43,7 @@ private:
 
   enum class RxParseState : uint8_t {
     Opcode,
+    MessageType,
     MessageLength,
     MessagePayload,
     ResultStatus,
@@ -39,13 +54,14 @@ private:
   void resetLink();
   void fail();
 
-  DataHandler _onData = nullptr;
+  ReceiveHandler _onReceive = nullptr;
   ConnectHandler _onConnect = nullptr;
   DisconnectHandler _onDisconnect = nullptr;
   SendResultHandler _onSendResult = nullptr;
 
   uint32_t _maxMessage = EasyBLEDefaultMaxMessage;
   uint8_t* _rxMessage = nullptr;
+  EasyBLEMessageType _rxType = EasyBLEMessageType::Text;
   size_t _rxExpected = 0;
   size_t _rxReceived = 0;
   uint8_t _rxHeader[4] = {};

@@ -4,7 +4,8 @@
 #include <stdint.h>
 
 struct EasyBLEBackend {
-  static bool begin(const char* name, uint32_t bufferSize);
+  static bool begin(const char* name, uint32_t txBufferSize,
+                    uint32_t rxBufferSize);
   static void end();
   static void poll();
   static void disconnect();
