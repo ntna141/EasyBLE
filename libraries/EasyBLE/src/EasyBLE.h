@@ -33,6 +33,8 @@ public:
   void onDisconnect(DisconnectHandler handler);
   void onSendResult(SendResultHandler handler);
 
+  // The data is copied internally, so the caller's buffer can be reused as
+  // soon as this returns. Returns false if the copy cannot be allocated.
   bool send(EasyBLEMessageType type, const uint8_t* data, size_t length);
   bool sendText(const char* text);
   bool isSending() const;
@@ -43,14 +45,18 @@ private:
 
   enum class RxParseState : uint8_t {
     Opcode,
-    MessageType,
-    MessageLength,
-    MessagePayload,
+    BeginType,
+    BeginLength,
+    ChunkLength,
+    ChunkPayload,
     ResultStatus,
   };
 
   void processIncoming(const uint8_t* data, size_t length);
-  bool sendResult();
+  bool pumpSend();
+  void finishSend(bool success);
+  bool sendResult(bool accepted);
+  void resetSend();
   void resetLink();
   void fail();
 
@@ -64,10 +70,17 @@ private:
   EasyBLEMessageType _rxType = EasyBLEMessageType::Text;
   size_t _rxExpected = 0;
   size_t _rxReceived = 0;
+  size_t _rxChunkExpected = 0;
+  size_t _rxChunkReceived = 0;
   uint8_t _rxHeader[4] = {};
   uint8_t _rxHeaderLength = 0;
+  bool _rxDiscard = false;
   RxParseState _rxState = RxParseState::Opcode;
 
+  uint8_t* _txMessage = nullptr;
+  uint32_t _txLength = 0;
+  uint32_t _txOffset = 0;
+  EasyBLEMessageType _txType = EasyBLEMessageType::Text;
   uint32_t _sendStart = 0;
   bool _awaitingResult = false;
   bool _failed = false;

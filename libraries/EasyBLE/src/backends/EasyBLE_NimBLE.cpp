@@ -10,7 +10,12 @@
 
 namespace {
 
-NimBLEStreamServer streamServer;
+class StreamServer : public NimBLEStreamServer {
+public:
+  using NimBLEStream::drainTx;
+};
+
+StreamServer streamServer;
 std::atomic<bool> rxOverflowed{false};
 std::atomic<bool> sessionEnded{false};
 
@@ -56,8 +61,6 @@ class StreamCallbacks : public NimBLECharacteristicCallbacks {
 
 StreamCallbacks streamCallbacks;
 
-// A peer must wait for RESULT before sending another message. If the RX ring
-// still fills, bytes have been lost and the framed stream cannot be recovered.
 NimBLEStream::RxOverflowAction onRxOverflow(const uint8_t*, size_t, void*) {
   rxOverflowed = true;
   return NimBLEStream::DROP_NEW_DATA;
@@ -107,8 +110,10 @@ void EasyBLEBackend::end() {
 }
 
 void EasyBLEBackend::poll() {
-  // If the session died without the disconnect callback firing, a stale
-  // overflow flag must not outlive it and block future sessions.
+  // NimBLEStream can stop sending on larger writes and never retry. We picked a smaller chunk size to avoid this
+  // Ask it to send whatever is still queued so a stalled write can finish.
+  streamServer.drainTx();
+
   if (rxInvalid() && !ready()) {
     endSession();
   }

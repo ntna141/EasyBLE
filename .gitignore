@@ -9,3 +9,4 @@ DerivedData/
 node_modules/
 .env
 .env.*
+/internal-tests
