@@ -2,7 +2,8 @@ import Foundation
 
 package enum EasyBLEProtocol {
     package static let serviceUUID = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
-    package static let streamUUID = "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
+    package static let phoneToDeviceUUID = "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
+    package static let deviceToPhoneUUID = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
     package static let restoreIdentifier = "EasyBLE"
     package static let result: UInt8 = 0x02
     package static let begin: UInt8 = 0x03

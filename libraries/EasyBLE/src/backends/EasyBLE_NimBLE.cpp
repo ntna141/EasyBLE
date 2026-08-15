@@ -15,15 +15,16 @@ public:
   using NimBLEStream::drainTx;
 };
 
-StreamServer streamServer;
+StreamServer deviceToPhoneStream;
+StreamServer phoneToDeviceStream;
 std::atomic<bool> rxOverflowed{false};
 std::atomic<bool> sessionEnded{false};
 
 void discardSessionIo() {
-  streamServer.flush();
+  deviceToPhoneStream.flush();
 
   uint8_t discarded[64];
-  while (streamServer.read(discarded, sizeof(discarded)) != 0) {
+  while (phoneToDeviceStream.read(discarded, sizeof(discarded)) != 0) {
   }
 }
 
@@ -42,7 +43,7 @@ class ServerCallbacks : public NimBLEServerCallbacks {
   }
 
   void onDisconnect(NimBLEServer*, NimBLEConnInfo& connInfo, int) override {
-    if (streamServer.getPeerHandle() == connInfo.getConnHandle()) {
+    if (deviceToPhoneStream.getPeerHandle() == connInfo.getConnHandle()) {
       endSession();
     }
   }
@@ -80,15 +81,29 @@ bool EasyBLEBackend::begin(const char* deviceName, uint32_t txBufferSize,
   server->setCallbacks(&serverCallbacks, false);
   server->advertiseOnDisconnect(true);
 
-  if (!streamServer.begin(NimBLEUUID(EASYBLE_SERVICE_UUID),
-                          NimBLEUUID(EASYBLE_STREAM_UUID), txBufferSize,
-                          rxBufferSize, false)) {
+  NimBLEService* service =
+      server->createService(NimBLEUUID(EASYBLE_SERVICE_UUID));
+  NimBLECharacteristic* deviceToPhone = service == nullptr
+      ? nullptr
+      : service->createCharacteristic(
+            NimBLEUUID(EASYBLE_DEVICE_TO_PHONE_UUID), NIMBLE_PROPERTY::NOTIFY);
+  NimBLECharacteristic* phoneToDevice = service == nullptr
+      ? nullptr
+      : service->createCharacteristic(
+            NimBLEUUID(EASYBLE_PHONE_TO_DEVICE_UUID),
+            NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
+
+  if (deviceToPhone == nullptr || phoneToDevice == nullptr ||
+      !deviceToPhoneStream.begin(deviceToPhone, txBufferSize, 0) ||
+      !phoneToDeviceStream.begin(phoneToDevice, 0, rxBufferSize)) {
+    deviceToPhoneStream.end();
+    phoneToDeviceStream.end();
     NimBLEDevice::deinit(true);
     return false;
   }
 
-  streamServer.setRxOverflowCallback(onRxOverflow);
-  streamServer.setCallbacks(&streamCallbacks);
+  phoneToDeviceStream.setRxOverflowCallback(onRxOverflow);
+  deviceToPhoneStream.setCallbacks(&streamCallbacks);
 
   NimBLEAdvertising* advertising = NimBLEDevice::getAdvertising();
   advertising->setName(deviceName);
@@ -105,14 +120,15 @@ void EasyBLEBackend::end() {
   NimBLEDevice::stopAdvertising();
   rxOverflowed = false;
   sessionEnded = false;
-  streamServer.end();
+  deviceToPhoneStream.end();
+  phoneToDeviceStream.end();
   NimBLEDevice::deinit(true);
 }
 
 void EasyBLEBackend::poll() {
   // NimBLEStream can stop sending on larger writes and never retry. We picked a smaller chunk size to avoid this
   // Ask it to send whatever is still queued so a stalled write can finish.
-  streamServer.drainTx();
+  deviceToPhoneStream.drainTx();
 
   if (rxInvalid() && !ready()) {
     endSession();
@@ -136,14 +152,14 @@ void EasyBLEBackend::poll() {
 
 void EasyBLEBackend::disconnect() {
   NimBLEServer* server = NimBLEDevice::getServer();
-  const uint16_t peerHandle = streamServer.getPeerHandle();
+  const uint16_t peerHandle = deviceToPhoneStream.getPeerHandle();
   if (server != nullptr && peerHandle != BLE_HS_CONN_HANDLE_NONE) {
     server->disconnect(peerHandle);
   }
 }
 
 bool EasyBLEBackend::ready() {
-  return streamServer.ready();
+  return deviceToPhoneStream.ready() && phoneToDeviceStream.ready();
 }
 
 bool EasyBLEBackend::rxInvalid() {
@@ -151,13 +167,13 @@ bool EasyBLEBackend::rxInvalid() {
 }
 
 size_t EasyBLEBackend::write(const uint8_t* data, size_t length) {
-  return streamServer.write(data, length);
+  return deviceToPhoneStream.write(data, length);
 }
 
 size_t EasyBLEBackend::availableForWrite() {
-  return streamServer.availableForWrite();
+  return deviceToPhoneStream.availableForWrite();
 }
 
 size_t EasyBLEBackend::read(uint8_t* buffer, size_t length) {
-  return streamServer.read(buffer, length);
+  return phoneToDeviceStream.read(buffer, length);
 }

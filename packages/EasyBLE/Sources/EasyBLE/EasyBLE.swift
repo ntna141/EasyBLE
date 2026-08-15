@@ -9,7 +9,8 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
     private var accessory: ASAccessory?
     private var central: CBCentralManager?
     private var peripheral: CBPeripheral?
-    private var stream: CBCharacteristic?
+    private var deviceToPhone: CBCharacteristic?
+    private var phoneToDevice: CBCharacteristic?
     private var receiveHandler: ((EasyBLEMessage) -> Void)?
     private var connectHandler: (() -> Void)?
     private var disconnectHandler: (() -> Void)?
@@ -132,7 +133,10 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
                   $0.uuid == CBUUID(string: EasyBLEProtocol.serviceUUID)
               }) else { return }
         peripheral.discoverCharacteristics(
-            [CBUUID(string: EasyBLEProtocol.streamUUID)],
+            [
+                CBUUID(string: EasyBLEProtocol.deviceToPhoneUUID),
+                CBUUID(string: EasyBLEProtocol.phoneToDeviceUUID),
+            ],
             for: service
         )
     }
@@ -142,12 +146,16 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
         didDiscoverCharacteristicsFor service: CBService,
         error: Error?
     ) {
-        guard error == nil,
-              let stream = service.characteristics?.first(where: {
-                  $0.uuid == CBUUID(string: EasyBLEProtocol.streamUUID)
-              }) else { return }
-        self.stream = stream
-        peripheral.setNotifyValue(true, for: stream)
+        guard error == nil, let characteristics = service.characteristics else { return }
+        let deviceToPhoneUUID = CBUUID(string: EasyBLEProtocol.deviceToPhoneUUID)
+        let phoneToDeviceUUID = CBUUID(string: EasyBLEProtocol.phoneToDeviceUUID)
+        guard let deviceToPhone = characteristics.first(where: { $0.uuid == deviceToPhoneUUID }),
+              let phoneToDevice = characteristics.first(where: { $0.uuid == phoneToDeviceUUID }) else {
+            return
+        }
+        self.deviceToPhone = deviceToPhone
+        self.phoneToDevice = phoneToDevice
+        peripheral.setNotifyValue(true, for: deviceToPhone)
     }
 
     public func peripheral(
@@ -159,7 +167,7 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
             fail()
             return
         }
-        guard characteristic.uuid == CBUUID(string: EasyBLEProtocol.streamUUID) else { return }
+        guard characteristic.uuid == CBUUID(string: EasyBLEProtocol.deviceToPhoneUUID) else { return }
         if characteristic.isNotifying {
             guard !sessionReady else { return }
             sessionReady = true
@@ -175,6 +183,7 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
         error: Error?
     ) {
         if error != nil { fail(); return }
+        guard characteristic.uuid == CBUUID(string: EasyBLEProtocol.deviceToPhoneUUID) else { return }
         guard let value = characteristic.value, !value.isEmpty else { return }
         parser.append(value)
     }
@@ -184,6 +193,7 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
         didWriteValueFor characteristic: CBCharacteristic,
         error: Error?
     ) {
+        guard characteristic.uuid == CBUUID(string: EasyBLEProtocol.phoneToDeviceUUID) else { return }
         writeInFlight = false
         if error != nil {
             fail()
@@ -281,9 +291,9 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
     }
 
     private func pumpWrites() {
-        guard let peripheral, let stream else { return }
+        guard let peripheral, let phoneToDevice else { return }
         let writeType: CBCharacteristicWriteType =
-            stream.properties.contains(.writeWithoutResponse) ? .withoutResponse : .withResponse
+            phoneToDevice.properties.contains(.writeWithoutResponse) ? .withoutResponse : .withResponse
 
         while true {
             if outgoing.isEmpty {
@@ -298,7 +308,7 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
             let maxLength = max(1, peripheral.maximumWriteValueLength(for: writeType))
             let chunk = Data(outgoing.prefix(maxLength))
             outgoing.removeFirst(chunk.count)
-            peripheral.writeValue(chunk, for: stream, type: writeType)
+            peripheral.writeValue(chunk, for: phoneToDevice, type: writeType)
             if writeType == .withResponse {
                 writeInFlight = true
                 return
@@ -329,7 +339,8 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
         awaitingResult = false
         resultTimeout?.cancel()
         parser.reset()
-        stream = nil
+        deviceToPhone = nil
+        phoneToDevice = nil
         outgoing.removeAll()
         txPayload = nil
         txOffset = 0

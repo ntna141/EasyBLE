@@ -4,7 +4,8 @@ import EasyBLE
 import Foundation
 
 private let serviceUUID = CBUUID(string: EasyBLEProtocol.serviceUUID)
-private let streamUUID = CBUUID(string: EasyBLEProtocol.streamUUID)
+private let deviceToPhoneUUID = CBUUID(string: EasyBLEProtocol.deviceToPhoneUUID)
+private let phoneToDeviceUUID = CBUUID(string: EasyBLEProtocol.phoneToDeviceUUID)
 private let targetName = "EasyBLE-HWTest"
 
 private enum ProtocolValue {
@@ -65,7 +66,8 @@ private func resultFrame(_ success: Bool) -> Data {
 private final class HardwareRunner: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     private var central: CBCentralManager!
     private var peripheral: CBPeripheral?
-    private var characteristic: CBCharacteristic?
+    private var deviceToPhone: CBCharacteristic?
+    private var phoneToDevice: CBCharacteristic?
     private let parser = StreamParser()
 
     private var actions: [TestAction] = []
@@ -217,7 +219,8 @@ private final class HardwareRunner: NSObject, CBCentralManagerDelegate, CBPeriph
         ])
 
         self.peripheral = nil
-        characteristic = nil
+        deviceToPhone = nil
+        phoneToDevice = nil
         parser.reset()
         writeQueue.removeAll()
         writeCompletion = nil
@@ -251,7 +254,7 @@ private final class HardwareRunner: NSObject, CBCentralManagerDelegate, CBPeriph
             fail("EasyBLE service missing")
             return
         }
-        peripheral.discoverCharacteristics([streamUUID], for: service)
+        peripheral.discoverCharacteristics([deviceToPhoneUUID, phoneToDeviceUUID], for: service)
     }
 
     func peripheral(
@@ -260,20 +263,24 @@ private final class HardwareRunner: NSObject, CBCentralManagerDelegate, CBPeriph
         error: Error?
     ) {
         if let error { fail("characteristic discovery failed: \(error)"); return }
-        guard let characteristic = service.characteristics?.first(where: { $0.uuid == streamUUID }) else {
-            fail("EasyBLE stream characteristic missing")
+        guard let characteristics = service.characteristics,
+              let deviceToPhone = characteristics.first(where: { $0.uuid == deviceToPhoneUUID }),
+              let phoneToDevice = characteristics.first(where: { $0.uuid == phoneToDeviceUUID }) else {
+            fail("EasyBLE NUS characteristics missing")
             return
         }
-        self.characteristic = characteristic
-        log(event: "characteristic", fields: [
-            "properties": characteristic.properties.rawValue,
+        self.deviceToPhone = deviceToPhone
+        self.phoneToDevice = phoneToDevice
+        log(event: "characteristics", fields: [
+            "deviceToPhoneProperties": deviceToPhone.properties.rawValue,
+            "phoneToDeviceProperties": phoneToDevice.properties.rawValue,
             "maxWrite": peripheral.maximumWriteValueLength(for: .withResponse)
         ])
 
         // The ESP32 must not report an EasyBLE connection until this subscription.
         let delay: TimeInterval = suiteStarted ? 0.05 : 1.0
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-            peripheral.setNotifyValue(true, for: characteristic)
+            peripheral.setNotifyValue(true, for: deviceToPhone)
         }
     }
 
@@ -283,6 +290,7 @@ private final class HardwareRunner: NSObject, CBCentralManagerDelegate, CBPeriph
         error: Error?
     ) {
         if let error { fail("notification state failed: \(error)"); return }
+        guard characteristic.uuid == deviceToPhoneUUID else { return }
 
         if resubscribeAction {
             if !characteristic.isNotifying {
@@ -310,6 +318,7 @@ private final class HardwareRunner: NSObject, CBCentralManagerDelegate, CBPeriph
         error: Error?
     ) {
         if let error { fail("notification failed: \(error)"); return }
+        guard characteristic.uuid == deviceToPhoneUUID else { return }
         guard let value = characteristic.value else { return }
         actionNotificationBytes += value.count
         actionNotificationCount += 1
@@ -321,6 +330,7 @@ private final class HardwareRunner: NSObject, CBCentralManagerDelegate, CBPeriph
         didWriteValueFor characteristic: CBCharacteristic,
         error: Error?
     ) {
+        guard characteristic.uuid == phoneToDeviceUUID else { return }
         if let error {
             if expectingDisconnect {
                 log(event: "write-ended-during-expected-disconnect", fields: ["error": error.localizedDescription])
@@ -363,13 +373,13 @@ private final class HardwareRunner: NSObject, CBCentralManagerDelegate, CBPeriph
     }
 
     private func writeNextWithoutResponse() {
-        guard let peripheral, let characteristic else {
+        guard let peripheral, let phoneToDevice else {
             fail("fast write attempted without a ready peripheral")
             return
         }
         while peripheral.canSendWriteWithoutResponse,
               let next = writeWithoutResponseQueue.first {
-            peripheral.writeValue(next, for: characteristic, type: .withoutResponse)
+            peripheral.writeValue(next, for: phoneToDevice, type: .withoutResponse)
             writeWithoutResponseQueue.removeFirst()
         }
         if writeWithoutResponseQueue.isEmpty {
@@ -380,7 +390,7 @@ private final class HardwareRunner: NSObject, CBCentralManagerDelegate, CBPeriph
     }
 
     private func writeNext() {
-        guard let peripheral, let characteristic else {
+        guard let peripheral, let phoneToDevice else {
             fail("write attempted without a ready peripheral")
             return
         }
@@ -390,7 +400,7 @@ private final class HardwareRunner: NSObject, CBCentralManagerDelegate, CBPeriph
             completion?()
             return
         }
-        peripheral.writeValue(next, for: characteristic, type: .withResponse)
+        peripheral.writeValue(next, for: phoneToDevice, type: .withResponse)
     }
 
     private func chunks(for data: Data, fragmentation: Fragmentation) -> [Data] {
@@ -541,7 +551,7 @@ private final class HardwareRunner: NSObject, CBCentralManagerDelegate, CBPeriph
     }
 
     private func runCurrentAction() {
-        guard characteristic != nil else { return }
+        guard deviceToPhone != nil, phoneToDevice != nil else { return }
         guard actionIndex < actions.count else { finishSuite(); return }
         resetActionState()
         log(event: "case-start", fields: ["index": actionIndex + 1, "name": actions[actionIndex].name])
@@ -861,13 +871,13 @@ private final class HardwareRunner: NSObject, CBCentralManagerDelegate, CBPeriph
         })
 
         suite.append(TestAction(name: "unsubscribe-resubscribe") { runner in
-            guard let peripheral = runner.peripheral, let characteristic = runner.characteristic else {
+            guard let peripheral = runner.peripheral, let deviceToPhone = runner.deviceToPhone else {
                 runner.fail("missing subscription")
                 return
             }
             runner.resubscribeAction = true
             runner.armCaseTimeout(5)
-            peripheral.setNotifyValue(false, for: characteristic)
+            peripheral.setNotifyValue(false, for: deviceToPhone)
         })
         roundTrip("post-resubscribe-clean-frame", ProtocolValue.text, Data("clean".utf8))
 
