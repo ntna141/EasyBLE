@@ -1,23 +1,25 @@
 import Foundation
 
-final class StreamParser {
+package final class StreamParser {
     private var buffer = Data()
     private var messageType: UInt8?
     private var messageLength = 0
     private var payload = Data()
 
-    var onMessage: ((UInt8, Data) -> Void)?
-    var onResult: ((UInt8) -> Void)?
-    var onError: (() -> Void)?
+    package var onMessage: ((UInt8, Data) -> Void)?
+    package var onResult: ((UInt8) -> Void)?
+    package var onError: (() -> Void)?
 
-    func reset() {
+    package init() {}
+
+    package func reset() {
         buffer.removeAll(keepingCapacity: true)
         messageType = nil
         messageLength = 0
         payload.removeAll(keepingCapacity: false)
     }
 
-    func append(_ data: Data) {
+    package func append(_ data: Data) {
         buffer.append(data)
         parse()
     }

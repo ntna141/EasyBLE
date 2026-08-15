@@ -6,9 +6,11 @@ let package = Package(
     name: "EasyBLE",
     platforms: [
         .iOS(.v18),
+        .macOS(.v14),
     ],
     products: [
         .library(name: "EasyBLE", targets: ["EasyBLE"]),
+        .executable(name: "EasyBLEHardwareRunner", targets: ["EasyBLEHardwareRunner"]),
     ],
     targets: [
         .target(
@@ -21,7 +23,17 @@ let package = Package(
             ],
             linkerSettings: [
                 .linkedFramework("CoreBluetooth"),
-                .linkedFramework("AccessorySetupKit"),
+                .linkedFramework("AccessorySetupKit", .when(platforms: [.iOS])),
+            ]
+        ),
+        .executableTarget(
+            name: "EasyBLEHardwareRunner",
+            dependencies: ["EasyBLE"],
+            swiftSettings: [
+                .defaultIsolation(MainActor.self),
+            ],
+            linkerSettings: [
+                .linkedFramework("CoreBluetooth"),
             ]
         ),
         .testTarget(

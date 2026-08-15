@@ -1,3 +1,4 @@
+#if os(iOS)
 import AccessorySetupKit
 import CoreBluetooth
 import UIKit
@@ -341,3 +342,4 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
         }
     }
 }
+#endif
