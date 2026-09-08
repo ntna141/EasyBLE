@@ -48,6 +48,37 @@ private func allFrames(type: EasyBLEMessageType, payload: Data) -> [Data] {
     #expect(got == payload)
 }
 
+@Test func parserReportsChunkBoundariesBeforeFinalChunk() {
+    let payload = Data((0..<7_000).map { UInt8($0 & 0xFF) })
+    let frames = allFrames(type: .image, payload: payload)
+    #expect(frames.count == 3)
+    let parser = StreamParser()
+    var chunks = 0
+    var got: Data?
+    parser.onChunk = { chunks += 1 }
+    parser.onMessage = { _, data in got = data }
+    for frame in frames {
+        parser.append(frame)
+    }
+    #expect(chunks == 2)
+    #expect(got == payload)
+}
+
+@Test func parserReadsAckBetweenChunks() {
+    let payload = Data((0..<4_000).map { UInt8($0 & 0xFF) })
+    let frames = allFrames(type: .text, payload: payload)
+    let parser = StreamParser()
+    var acks = 0
+    var got: Data?
+    parser.onAck = { acks += 1 }
+    parser.onMessage = { _, data in got = data }
+    parser.append(frames[0])
+    parser.append(EasyBLEProtocol.ackFrame)
+    parser.append(frames[1])
+    #expect(acks == 1)
+    #expect(got == payload)
+}
+
 @Test func parserReportsUnknownOpcode() {
     let parser = StreamParser()
     var failed = false

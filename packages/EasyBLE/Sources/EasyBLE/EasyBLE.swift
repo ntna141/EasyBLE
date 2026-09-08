@@ -25,6 +25,7 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
     private var txOffset = 0
     private var awaitingResult = false
     private var awaitingOfferAck = false
+    private var awaitingChunkAck = false
     private var resultTimeout: Task<Void, Never>?
     private var writeInFlight = false
 
@@ -33,8 +34,14 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
         parser.onMessage = { [weak self] type, data in
             self?.received(type: type, data: data)
         }
+        parser.onChunk = { [weak self] in
+            self?.enqueue(EasyBLEProtocol.ackFrame)
+        }
         parser.onResult = { [weak self] status in
             self?.receivedResult(status)
+        }
+        parser.onAck = { [weak self] in
+            self?.receivedAck()
         }
         parser.onError = { [weak self] in
             self?.fail("parser error")
@@ -97,15 +104,14 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
         txPayload = data
         txType = type
         txOffset = 0
-        if type == .image {
-            awaitingOfferAck = true
-            outgoing = EasyBLEProtocol.offerFrame(type: type, length: data.count)
-            easyBLELog.info("offer type=\(typeName, privacy: .public) bytes=\(data.count)")
-        } else {
-            awaitingOfferAck = false
-        }
+        awaitingOfferAck = data.count > EasyBLEProtocol.offerThreshold
         armResultTimeout()
-        pumpWrites()
+        if awaitingOfferAck {
+            easyBLELog.info("offer type=\(typeName, privacy: .public) bytes=\(data.count)")
+            enqueue(EasyBLEProtocol.offerFrame(type: type, length: data.count))
+        } else {
+            pumpWrites()
+        }
         return true
     }
 
@@ -320,9 +326,23 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
         let typeName = type == .image ? "image" : "text"
         let preview = String(data: data, encoding: .utf8) ?? "\(data.count) bytes"
         easyBLELog.info("message \(typeName, privacy: .public) \(preview, privacy: .public)")
-        outgoing.append(EasyBLEProtocol.resultFrame(true))
-        pumpWrites()
+        enqueue(EasyBLEProtocol.resultFrame(true))
         receiveHandler?(EasyBLEMessage(type: type, data: data))
+    }
+
+    private func enqueue(_ frame: Data) {
+        outgoing.append(frame)
+        pumpWrites()
+    }
+
+    private func receivedAck() {
+        guard awaitingChunkAck else {
+            fail("unexpected ack offset=\(txOffset)")
+            return
+        }
+        awaitingChunkAck = false
+        armResultTimeout()
+        pumpWrites()
     }
 
     private func receivedResult(_ status: UInt8) {
@@ -354,6 +374,7 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
         easyBLELog.info("send finished success=\(success)")
         awaitingResult = false
         awaitingOfferAck = false
+        awaitingChunkAck = false
         resultTimeout?.cancel()
         txPayload = nil
         txOffset = 0
@@ -368,6 +389,8 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
         easyBLELog.info("frame type=\(self.txType.rawValue) offset=\(offset)/\(payload.count) frame=\(frame.count)")
         if txOffset == payload.count {
             txPayload = nil
+        } else {
+            awaitingChunkAck = true
         }
         armResultTimeout()
         return frame
@@ -383,7 +406,7 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
 
         while true {
             if outgoing.isEmpty {
-                if awaitingOfferAck {
+                if awaitingOfferAck || awaitingChunkAck {
                     return
                 }
                 guard let frame = nextFrame() else { return }
@@ -428,6 +451,7 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
         sessionReady = false
         awaitingResult = false
         awaitingOfferAck = false
+        awaitingChunkAck = false
         resultTimeout?.cancel()
         parser.reset()
         deviceToPhone = nil

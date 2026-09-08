@@ -64,7 +64,6 @@ StreamCallbacks streamCallbacks;
 
 NimBLEStream::RxOverflowAction onRxOverflow(const uint8_t*, size_t, void*) {
   rxOverflowed = true;
-  Serial.println("[ble] rx overflow");
   return NimBLEStream::DROP_NEW_DATA;
 }
 

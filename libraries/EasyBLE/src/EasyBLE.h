@@ -35,20 +35,18 @@ class EasyBLEClass {
 public:
   using ReceiveHandler = void (*)(const EasyBLEMessage& message);
   using StreamHandler = bool (*)(const EasyBLEStreamEvent& event);
-  using StreamRequestHandler = bool (*)(EasyBLEMessageType type, size_t length);
   using ConnectHandler = void (*)();
   using DisconnectHandler = void (*)();
   using SendResultHandler = void (*)(bool success);
 
   bool begin(const char* deviceName,
-             uint32_t startupBufferSize = EasyBLEDefaultMaxMessage,
-             uint32_t maxMessageSize = EasyBLEDefaultMaxMessage);
+             uint32_t maxMessageSize = EasyBLEDefaultMaxMessage,
+             uint32_t startupBufferSize = EasyBLEDefaultMaxMessage);
   void end();
   void update();
 
   void onReceive(ReceiveHandler handler);
   void onStream(StreamHandler handler);
-  void onStreamRequest(StreamRequestHandler handler);
   void onConnect(ConnectHandler handler);
   void onDisconnect(DisconnectHandler handler);
   void onSendResult(SendResultHandler handler);
@@ -65,31 +63,33 @@ private:
 
   enum class RxParseState : uint8_t {
     Opcode,
-    BeginType,
-    BeginLength,
+    HeaderType,
+    HeaderLength,
     ChunkLength,
     ChunkPayload,
     ResultStatus,
-    OfferType,
-    OfferLength,
   };
 
   void processIncoming(const uint8_t* data, size_t length);
   bool pumpSend();
   void finishSend(bool success);
+  bool sendControl(const uint8_t* frame, size_t length);
   bool sendResult(bool accepted);
+  bool sendAck();
   void resetSend();
   void resetLink();
   void fail();
+  bool allocateRxBuffer(size_t capacity);
   bool ensureRxCapacity(size_t length);
   void shrinkRxBuffer();
+  bool acceptMessage(size_t length);
+  void resetRxMessage();
   bool notifyStream(EasyBLEStreamStatus status, size_t totalLength,
                     const uint8_t* data, size_t length);
   void abortStream();
 
   ReceiveHandler _onReceive = nullptr;
   StreamHandler _onStream = nullptr;
-  StreamRequestHandler _onStreamRequest = nullptr;
   ConnectHandler _onConnect = nullptr;
   DisconnectHandler _onDisconnect = nullptr;
   SendResultHandler _onSendResult = nullptr;
@@ -105,8 +105,10 @@ private:
   size_t _rxChunkReceived = 0;
   uint8_t _rxHeader[4] = {};
   uint8_t _rxHeaderLength = 0;
+  uint8_t _rxHeaderOpcode = 0;
   bool _rxDiscard = false;
   bool _rxStreaming = false;
+  bool _rxOffered = false;
   RxParseState _rxState = RxParseState::Opcode;
 
   uint8_t* _txMessage = nullptr;
@@ -115,6 +117,7 @@ private:
   EasyBLEMessageType _txType = EasyBLEMessageType::Text;
   uint32_t _sendStart = 0;
   bool _awaitingResult = false;
+  bool _awaitingAck = false;
   bool _failed = false;
   bool _connected = false;
   bool _started = false;

@@ -10,7 +10,9 @@ package final class StreamParser {
     private var payload = Data()
 
     package var onMessage: ((UInt8, Data) -> Void)?
+    package var onChunk: (() -> Void)?
     package var onResult: ((UInt8) -> Void)?
+    package var onAck: (() -> Void)?
     package var onError: (() -> Void)?
 
     package init() {}
@@ -35,6 +37,10 @@ package final class StreamParser {
                 let status = buffer[buffer.startIndex.advanced(by: 1)]
                 buffer.removeFirst(2)
                 onResult?(status)
+
+            case EasyBLEProtocol.ack:
+                buffer.removeFirst(1)
+                onAck?()
 
             case EasyBLEProtocol.begin:
                 guard messageType == nil else {
@@ -104,7 +110,11 @@ package final class StreamParser {
     }
 
     private func finishChunk() {
-        guard payload.count == messageLength, let type = messageType else { return }
+        guard let type = messageType else { return }
+        guard payload.count == messageLength else {
+            onChunk?()
+            return
+        }
         let data = payload
         messageType = nil
         messageLength = 0

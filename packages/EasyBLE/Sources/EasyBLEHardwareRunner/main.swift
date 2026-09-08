@@ -47,10 +47,14 @@ private func textData(length: Int) -> Data {
 }
 
 private func frame(type: UInt8, payload: Data) -> Data {
+    protocolFrames(type: type, payload: payload).reduce(into: Data()) { $0.append($1) }
+}
+
+private func protocolFrames(type: UInt8, payload: Data) -> [Data] {
     guard let type = EasyBLEMessageType(rawValue: type) else {
         preconditionFailure("unsupported message type \(type)")
     }
-    var output = Data()
+    var output: [Data] = []
     var offset = 0
     while offset < payload.count {
         output.append(EasyBLEProtocol.frame(type: type, payload: payload, offset: offset))
@@ -88,9 +92,21 @@ private final class HardwareRunner: NSObject, CBCentralManagerDelegate, CBPeriph
     private var expectedType: UInt8?
     private var expectedMessages: [(data: Data, ack: Bool)] = []
     private var expectedMessageIndex = 0
-    private var gotInboundResult = false
+    private var expectedResultCount = 1
+    private var receivedResultCount = 0
+    private var resultReceivedHandler: ((Int) -> Void)?
+    private var messageAcknowledgedHandler: ((Int) -> Void)?
     private var expectationCompletion: (() -> Void)?
     private var suppressExpectationPass = false
+    private var uploadFrames: [Data] = []
+    private var uploadIndex = 0
+    private var uploadFast = false
+    private var uploadFragmentation: Fragmentation = .normal
+    private var uploadFrameWritten = false
+    private var uploadAcked = false
+    private var uploadCompletion: (() -> Void)?
+    private var bidirectionalUploadActive = false
+    private var sawInterleavedResult = false
     private var withholdMessageAck = false
     private var waitingForDisconnectAfterWithhold = false
     private var messageAckDelay: TimeInterval = 0
@@ -111,8 +127,14 @@ private final class HardwareRunner: NSObject, CBCentralManagerDelegate, CBPeriph
         parser.onMessage = { [weak self] type, payload in
             self?.receivedMessage(type: type, payload: payload)
         }
+        parser.onChunk = { [weak self] in
+            self?.enqueueControl(EasyBLEProtocol.ackFrame)
+        }
         parser.onResult = { [weak self] status in
             self?.receivedResult(status)
+        }
+        parser.onAck = { [weak self] in
+            self?.receivedAck()
         }
         parser.onError = { [weak self] in
             self?.fail("invalid frame from ESP32")
@@ -226,6 +248,7 @@ private final class HardwareRunner: NSObject, CBCentralManagerDelegate, CBPeriph
         writeCompletion = nil
         writeWithoutResponseQueue.removeAll()
         writeWithoutResponseCompletion = nil
+        resetUploadState()
 
         guard expectingDisconnect else {
             fail("unexpected disconnect")
@@ -360,15 +383,19 @@ private final class HardwareRunner: NSObject, CBCentralManagerDelegate, CBPeriph
 
     private func enqueueWriteWithoutResponse(_ data: Data, completion: (() -> Void)? = nil) {
         guard let peripheral else { fail("fast write attempted without a peripheral"); return }
-        guard writeQueue.isEmpty, writeWithoutResponseQueue.isEmpty else {
+        guard writeQueue.isEmpty else {
             fail("test harness attempted overlapping writes")
             return
         }
         let maximum = max(1, peripheral.maximumWriteValueLength(for: .withoutResponse))
-        writeWithoutResponseQueue = stride(from: 0, to: data.count, by: maximum).map {
+        writeWithoutResponseQueue.append(contentsOf: stride(from: 0, to: data.count, by: maximum).map {
             data.subdata(in: $0..<min($0 + maximum, data.count))
+        })
+        let previousCompletion = writeWithoutResponseCompletion
+        writeWithoutResponseCompletion = {
+            previousCompletion?()
+            completion?()
         }
-        writeWithoutResponseCompletion = completion
         writeNextWithoutResponse()
     }
 
@@ -428,13 +455,19 @@ private final class HardwareRunner: NSObject, CBCentralManagerDelegate, CBPeriph
         type: UInt8,
         messages: [(Data, Bool)],
         timeout: TimeInterval = 8,
+        resultCount: Int = 1,
+        onResult: ((Int) -> Void)? = nil,
+        onMessageAcknowledged: ((Int) -> Void)? = nil,
         completion: (() -> Void)? = nil,
         suppressPass: Bool = false
     ) {
         expectedType = type
         expectedMessages = messages.map { (data: $0.0, ack: $0.1) }
         expectedMessageIndex = 0
-        gotInboundResult = false
+        expectedResultCount = resultCount
+        receivedResultCount = 0
+        resultReceivedHandler = onResult
+        messageAcknowledgedHandler = onMessageAcknowledged
         expectationCompletion = completion
         suppressExpectationPass = suppressPass
         armCaseTimeout(timeout)
@@ -451,8 +484,7 @@ private final class HardwareRunner: NSObject, CBCentralManagerDelegate, CBPeriph
                          timeout: payload.count >= 4095 ? 14 : 8,
                          completion: completion,
                          suppressPass: suppressPass)
-        let bytes = frame(type: type, payload: payload)
-        enqueueWrite(chunks(for: bytes, fragmentation: fragmentation))
+        upload(protocolFrames(type: type, payload: payload), fragmentation: fragmentation)
     }
 
     private func sendCommand(
@@ -475,11 +507,12 @@ private final class HardwareRunner: NSObject, CBCentralManagerDelegate, CBPeriph
             return
         }
         guard status == 1 else { fail("ESP32 returned RESULT status \(status)"); return }
-        guard expectedType != nil, !gotInboundResult else {
+        guard expectedType != nil, receivedResultCount < expectedResultCount else {
             fail("unsolicited or duplicate RESULT from ESP32")
             return
         }
-        gotInboundResult = true
+        receivedResultCount += 1
+        resultReceivedHandler?(receivedResultCount)
         completeExpectationIfReady()
     }
 
@@ -503,6 +536,7 @@ private final class HardwareRunner: NSObject, CBCentralManagerDelegate, CBPeriph
             return
         }
         expectedMessageIndex += 1
+        let acknowledgedMessageIndex = expectedMessageIndex
 
         if cancelConnectionOnMessage {
             cancelConnectionOnMessage = false
@@ -522,7 +556,8 @@ private final class HardwareRunner: NSObject, CBCentralManagerDelegate, CBPeriph
 
         let acknowledge = { [weak self] in
             guard let self else { return }
-            self.enqueueWrite(self.chunks(for: resultFrame(expectation.ack), fragmentation: .normal)) { [weak self] in
+            self.enqueueControl(resultFrame(expectation.ack)) { [weak self] in
+                self?.messageAcknowledgedHandler?(acknowledgedMessageIndex)
                 self?.completeExpectationIfReady()
             }
         }
@@ -537,10 +572,16 @@ private final class HardwareRunner: NSObject, CBCentralManagerDelegate, CBPeriph
 
     private func completeExpectationIfReady() {
         guard !waitingForDisconnectAfterWithhold else { return }
-        guard gotInboundResult, expectedMessageIndex == expectedMessages.count, writeQueue.isEmpty else { return }
+        guard receivedResultCount == expectedResultCount,
+              expectedMessageIndex == expectedMessages.count,
+              writeQueue.isEmpty,
+              writeWithoutResponseQueue.isEmpty,
+              !bidirectionalUploadActive else { return }
         caseTimeout?.cancel()
         expectedType = nil
         expectedMessages = []
+        resultReceivedHandler = nil
+        messageAcknowledgedHandler = nil
         let completion = expectationCompletion
         expectationCompletion = nil
         if let completion {
@@ -563,9 +604,15 @@ private final class HardwareRunner: NSObject, CBCentralManagerDelegate, CBPeriph
         expectedType = nil
         expectedMessages = []
         expectedMessageIndex = 0
-        gotInboundResult = false
+        expectedResultCount = 1
+        receivedResultCount = 0
+        resultReceivedHandler = nil
+        messageAcknowledgedHandler = nil
         expectationCompletion = nil
         suppressExpectationPass = false
+        resetUploadState()
+        bidirectionalUploadActive = false
+        sawInterleavedResult = false
         withholdMessageAck = false
         waitingForDisconnectAfterWithhold = false
         messageAckDelay = 0
@@ -663,6 +710,186 @@ private final class HardwareRunner: NSObject, CBCentralManagerDelegate, CBPeriph
             self.sendRoundTrip(type: type, payload: data, completion: runOne, suppressPass: true)
         }
         runOne()
+    }
+
+    private func enqueueControl(_ data: Data, completion: (() -> Void)? = nil) {
+        if bidirectionalUploadActive || !writeWithoutResponseQueue.isEmpty {
+            enqueueWriteWithoutResponse(data, completion: completion)
+        } else {
+            enqueueWrite(chunks(for: data, fragmentation: .normal), completion: completion)
+        }
+    }
+
+    private func upload(
+        _ frames: [Data],
+        fast: Bool = false,
+        fragmentation: Fragmentation = .normal,
+        completion: (() -> Void)? = nil
+    ) {
+        guard uploadFrames.isEmpty else {
+            fail("test harness attempted overlapping uploads")
+            return
+        }
+        uploadFrames = frames
+        uploadIndex = 0
+        uploadFast = fast
+        uploadFragmentation = fragmentation
+        uploadCompletion = completion
+        uploadNextFrame()
+    }
+
+    private func uploadNextFrame() {
+        guard uploadIndex < uploadFrames.count else {
+            let completion = uploadCompletion
+            resetUploadState()
+            completion?()
+            return
+        }
+        let next = uploadFrames[uploadIndex]
+        uploadIndex += 1
+        uploadFrameWritten = false
+        uploadAcked = uploadIndex == uploadFrames.count
+        let written = { [weak self] in
+            self?.uploadFrameWritten = true
+            self?.advanceUploadIfReady()
+        }
+        if uploadFast {
+            enqueueWriteWithoutResponse(next, completion: written)
+        } else {
+            enqueueWrite(chunks(for: next, fragmentation: uploadFragmentation), completion: written)
+        }
+    }
+
+    private func advanceUploadIfReady() {
+        guard uploadFrameWritten, uploadAcked else { return }
+        uploadNextFrame()
+    }
+
+    private func receivedAck() {
+        guard !uploadFrames.isEmpty, uploadIndex < uploadFrames.count, !uploadAcked else {
+            fail("unsolicited ACK from ESP32")
+            return
+        }
+        uploadAcked = true
+        advanceUploadIfReady()
+    }
+
+    private func resetUploadState() {
+        uploadFrames = []
+        uploadIndex = 0
+        uploadFast = false
+        uploadFragmentation = .normal
+        uploadFrameWritten = false
+        uploadAcked = false
+        uploadCompletion = nil
+    }
+
+    private func bidirectionalUpload(_ payload: Data) {
+        bidirectionalUploadActive = true
+        upload(protocolFrames(type: ProtocolValue.text, payload: payload), fast: true) { [weak self] in
+            self?.bidirectionalUploadActive = false
+            self?.completeExpectationIfReady()
+        }
+    }
+
+    private func bidirectionalInterleave() {
+        let phonePayload = deterministicData(length: 8_192, seed: 0xA7)
+        let devicePayload = deterministicData(length: 65_536, seed: 0x51)
+        let report = Data("@report:bidirectional:ok".utf8)
+        let started = Date()
+        var uploadStarted: Date?
+        var uploadResultSeconds: TimeInterval = 0
+        var devicePayloadSeconds: TimeInterval = 0
+
+        startExpectation(
+            type: ProtocolValue.text,
+            messages: [(devicePayload, true), (report, true)],
+            timeout: 120,
+            resultCount: 2,
+            onResult: { [weak self] count in
+                guard let self else { return }
+                if count == 1 {
+                    uploadStarted = Date()
+                    self.bidirectionalUpload(phonePayload)
+                } else if count == 2 {
+                    if let uploadStarted {
+                        uploadResultSeconds = Date().timeIntervalSince(uploadStarted)
+                    }
+                    guard self.expectedMessageIndex == 0 else {
+                        self.fail("upload RESULT arrived only after the device payload completed")
+                        return
+                    }
+                    self.sawInterleavedResult = true
+                    self.log(event: "interleaved-result", fields: [
+                        "phoneBytes": phonePayload.count,
+                        "deviceBytes": devicePayload.count,
+                    ])
+                }
+            },
+            onMessageAcknowledged: { index in
+                if index == 1, let uploadStarted {
+                    devicePayloadSeconds = Date().timeIntervalSince(uploadStarted)
+                }
+            },
+            completion: { [weak self] in
+                guard let self else { return }
+                guard self.sawInterleavedResult else {
+                    self.fail("no RESULT was observed inside the device payload")
+                    return
+                }
+                self.passCurrent(extra: [
+                    "phoneBytes": phonePayload.count,
+                    "deviceBytes": devicePayload.count,
+                    "interleavedResult": true,
+                    "seconds": String(format: "%.3f", Date().timeIntervalSince(started)),
+                    "uploadResultSeconds": String(format: "%.3f", uploadResultSeconds),
+                    "devicePayloadSeconds": String(format: "%.3f", devicePayloadSeconds),
+                ])
+            },
+            suppressPass: true
+        )
+
+        let command = Data("@cmd:bidirectional-interleave".utf8)
+        enqueueWrite(chunks(for: frame(type: ProtocolValue.text, payload: command), fragmentation: .normal))
+    }
+
+    private func serializedBaseline() {
+        let phonePayload = deterministicData(length: 8_192, seed: 0xA7)
+        let devicePayload = deterministicData(length: 65_536, seed: 0x51)
+        let report = Data("@report:bidirectional:ok".utf8)
+        let started = Date()
+        var uploadStarted: Date?
+        var uploadResultSeconds: TimeInterval = 0
+
+        startExpectation(
+            type: ProtocolValue.text,
+            messages: [(devicePayload, true), (report, true)],
+            timeout: 120,
+            resultCount: 2,
+            onResult: { count in
+                if count == 2, let uploadStarted {
+                    uploadResultSeconds = Date().timeIntervalSince(uploadStarted)
+                }
+            },
+            onMessageAcknowledged: { [weak self] index in
+                guard index == 1, let self else { return }
+                uploadStarted = Date()
+                self.bidirectionalUpload(phonePayload)
+            },
+            completion: { [weak self] in
+                self?.passCurrent(extra: [
+                    "phoneBytes": phonePayload.count,
+                    "deviceBytes": devicePayload.count,
+                    "interleavedResult": false,
+                    "seconds": String(format: "%.3f", Date().timeIntervalSince(started)),
+                    "uploadResultSeconds": String(format: "%.3f", uploadResultSeconds),
+                ])
+            },
+            suppressPass: true
+        )
+
+        let command = Data("@cmd:bidirectional-interleave".utf8)
+        enqueueWrite(chunks(for: frame(type: ProtocolValue.text, payload: command), fragmentation: .normal))
     }
 
     private func restartAction(command: String) {
@@ -783,14 +1010,35 @@ private final class HardwareRunner: NSObject, CBCentralManagerDelegate, CBPeriph
                     messages: [(Data(report.utf8), true)],
                     timeout: timeout
                 )
-                let bytes = frame(type: type, payload: payload)
-                if fast {
-                    runner.enqueueWriteWithoutResponse(bytes)
-                } else {
-                    runner.enqueueWrite(runner.chunks(for: bytes, fragmentation: .normal))
-                }
+                runner.upload(protocolFrames(type: type, payload: payload), fast: fast)
             })
         }
+
+        suite.append(TestAction(name: "continuation-benchmark-interleaved") {
+            $0.bidirectionalInterleave()
+        })
+        suite.append(TestAction(name: "continuation-benchmark-serialized") {
+            $0.serializedBaseline()
+        })
+        suite.append(TestAction(name: "onstream-receive-200000") { runner in
+            let payload = deterministicData(length: 200_000, seed: 0x3C)
+            let started = Date()
+            runner.startExpectation(
+                type: ProtocolValue.text,
+                messages: [(Data("@report:stream:ok".utf8), true)],
+                timeout: 60,
+                completion: {
+                    let elapsed = Date().timeIntervalSince(started)
+                    runner.passCurrent(extra: [
+                        "bytes": payload.count,
+                        "seconds": String(format: "%.3f", elapsed),
+                        "bytesPerSecond": Int(Double(payload.count) / max(elapsed, 0.001))
+                    ])
+                },
+                suppressPass: true
+            )
+            runner.upload(protocolFrames(type: ProtocolValue.text, payload: payload), fast: true)
+        })
 
         sinkReceive("incoming-only-4096-integrity", type: ProtocolValue.text,
                     length: 4096, timeout: 8, fast: false)

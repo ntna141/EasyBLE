@@ -4,6 +4,8 @@ __pycache__/
 .pio
 .vscode/
 .idea/
+.build/
+.swiftpm/
 DerivedData/
 *.xcuserdata
 node_modules/
