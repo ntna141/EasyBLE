@@ -8,6 +8,7 @@ package enum EasyBLEProtocol {
     package static let result: UInt8 = 0x02
     package static let begin: UInt8 = 0x03
     package static let continueOpcode: UInt8 = 0x04
+    package static let offer: UInt8 = 0x05
     package static let chunkPayloadSize = 3_072
     package static let maxMessageSize = 8 * 1024 * 1024
     package static let resultTimeout: TimeInterval = 15
@@ -31,5 +32,12 @@ package enum EasyBLEProtocol {
 
     package static func resultFrame(_ success: Bool) -> Data {
         Data([result, success ? 1 : 0])
+    }
+
+    package static func offerFrame(type: EasyBLEMessageType, length: Int) -> Data {
+        var frame = Data([offer, type.rawValue])
+        var littleEndianLength = UInt32(length).littleEndian
+        withUnsafeBytes(of: &littleEndianLength) { frame.append(contentsOf: $0) }
+        return frame
     }
 }

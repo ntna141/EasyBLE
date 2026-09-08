@@ -10,6 +10,7 @@ namespace {
 constexpr uint8_t OpcodeResult = 0x02;
 constexpr uint8_t OpcodeBegin = 0x03;
 constexpr uint8_t OpcodeContinue = 0x04;
+constexpr uint8_t OpcodeOffer = 0x05;
 
 constexpr size_t BeginHeaderSize = 8;
 constexpr size_t ContinueHeaderSize = 3;
@@ -18,13 +19,8 @@ constexpr size_t ResultRecordSize = 2;
 constexpr size_t MaxChunkFrameSize =
     BeginHeaderSize + EasyBLEChunkPayloadSize;
 
-// One maximum-sized chunk, a RESULT that may already be queued when a receive
-// handler calls send(), and the RESULT slot pumpSend() reserves.
 constexpr size_t TxBufferSize = MaxChunkFrameSize + 2 * ResultRecordSize;
-
-// Backpressure permits one incoming chunk plus the final RESULT for an
-// outgoing message before update() drains the ring.
-constexpr size_t RxBufferSize = MaxChunkFrameSize + ResultRecordSize;
+constexpr size_t RxBufferSize = 16 * MaxChunkFrameSize;
 
 constexpr size_t ReadChunkSize = 244;
 
@@ -60,16 +56,15 @@ uint8_t* allocateMessage(size_t length) {
 
 }  // namespace
 
-bool EasyBLEClass::begin(const char* deviceName, uint32_t maxMessageSize) {
-  if (_rxMessage != nullptr || maxMessageSize < EasyBLEMinimumMaxMessage ||
-      maxMessageSize == UINT32_MAX) {
+bool EasyBLEClass::begin(const char* deviceName, uint32_t startupBufferSize,
+                         uint32_t maxMessageSize) {
+  if (_started || maxMessageSize < EasyBLEMinimumMaxMessage ||
+      maxMessageSize == UINT32_MAX || startupBufferSize > maxMessageSize) {
     return false;
   }
 
-  // One extra byte so received payloads can be NUL-terminated for the
-  // handler.
-  _rxMessage = allocateMessage(maxMessageSize + 1);
-  if (_rxMessage == nullptr) {
+  _rxStartupCapacity = startupBufferSize;
+  if (!ensureRxCapacity(startupBufferSize)) {
     return false;
   }
 
@@ -80,8 +75,10 @@ bool EasyBLEClass::begin(const char* deviceName, uint32_t maxMessageSize) {
   if (!EasyBLEBackend::begin(deviceName, TxBufferSize, RxBufferSize)) {
     free(_rxMessage);
     _rxMessage = nullptr;
+    _rxCapacity = 0;
     return false;
   }
+  _started = true;
   return true;
 }
 
@@ -89,8 +86,36 @@ void EasyBLEClass::end() {
   EasyBLEBackend::end();
   free(_rxMessage);
   _rxMessage = nullptr;
+  _rxCapacity = 0;
+  _started = false;
   _connected = false;
   resetLink();
+}
+
+bool EasyBLEClass::ensureRxCapacity(size_t length) {
+  if (_rxMessage != nullptr && length <= _rxCapacity) {
+    return true;
+  }
+
+  free(_rxMessage);
+  _rxMessage = allocateMessage(length + 1);
+  if (_rxMessage != nullptr) {
+    _rxCapacity = length;
+    return true;
+  }
+
+  _rxMessage = allocateMessage(_rxStartupCapacity + 1);
+  _rxCapacity = _rxMessage == nullptr ? 0 : _rxStartupCapacity;
+  return false;
+}
+
+void EasyBLEClass::shrinkRxBuffer() {
+  if (!_started || _rxCapacity <= _rxStartupCapacity) {
+    return;
+  }
+  free(_rxMessage);
+  _rxMessage = allocateMessage(_rxStartupCapacity + 1);
+  _rxCapacity = _rxMessage == nullptr ? 0 : _rxStartupCapacity;
 }
 
 void EasyBLEClass::update() {
@@ -134,6 +159,14 @@ void EasyBLEClass::update() {
 
 void EasyBLEClass::onReceive(ReceiveHandler handler) {
   _onReceive = handler;
+}
+
+void EasyBLEClass::onStream(StreamHandler handler) {
+  _onStream = handler;
+}
+
+void EasyBLEClass::onStreamRequest(StreamRequestHandler handler) {
+  _onStreamRequest = handler;
 }
 
 void EasyBLEClass::onConnect(ConnectHandler handler) {
@@ -258,6 +291,13 @@ void EasyBLEClass::processIncoming(const uint8_t* data, size_t length) {
             _rxHeaderLength = 0;
             _rxState = RxParseState::ChunkLength;
             break;
+          case OpcodeOffer:
+            if (_rxExpected != 0) {
+              fail();
+              break;
+            }
+            _rxState = RxParseState::OfferType;
+            break;
           default:
             fail();
             break;
@@ -284,11 +324,16 @@ void EasyBLEClass::processIncoming(const uint8_t* data, size_t length) {
             fail();
             break;
           }
-          // Drain an oversized message without storing it, then reject the
-          // complete message with the single final RESULT.
-          _rxDiscard = messageLength > _maxMessage;
           _rxExpected = messageLength;
           _rxReceived = 0;
+          _rxStreaming = _onStream != nullptr &&
+              notifyStream(EasyBLEStreamStatus::Begin, messageLength,
+                           nullptr, 0);
+          // Drain an oversized message without storing it, then reject the
+          // complete message with the single final RESULT.
+          _rxDiscard = !_rxStreaming &&
+              (messageLength > _maxMessage ||
+               !ensureRxCapacity(messageLength));
           _rxHeaderLength = 0;
           _rxState = RxParseState::ChunkLength;
         }
@@ -304,6 +349,10 @@ void EasyBLEClass::processIncoming(const uint8_t* data, size_t length) {
             fail();
             break;
           }
+          if (_rxStreaming && !ensureRxCapacity(chunkLength)) {
+            abortStream();
+            _rxDiscard = true;
+          }
           _rxChunkExpected = chunkLength;
           _rxChunkReceived = 0;
           _rxState = RxParseState::ChunkPayload;
@@ -315,27 +364,41 @@ void EasyBLEClass::processIncoming(const uint8_t* data, size_t length) {
         const size_t remaining = _rxChunkExpected - _rxChunkReceived;
         const size_t take = available < remaining ? available : remaining;
         if (!_rxDiscard) {
-          memcpy(_rxMessage + _rxReceived, data + offset, take);
+          memcpy(_rxMessage + (_rxStreaming ? _rxChunkReceived : _rxReceived),
+                 data + offset, take);
         }
         offset += take;
         _rxReceived += take;
         _rxChunkReceived += take;
 
         if (_rxChunkReceived == _rxChunkExpected) {
+          const size_t chunkLength = _rxChunkExpected;
           _rxState = RxParseState::Opcode;
           _rxChunkExpected = 0;
           _rxChunkReceived = 0;
           _rxHeaderLength = 0;
 
+          if (_rxStreaming &&
+              !notifyStream(EasyBLEStreamStatus::Data, _rxExpected,
+                            _rxMessage, chunkLength)) {
+            _rxStreaming = false;
+            _rxDiscard = true;
+          }
+
           if (_rxReceived == _rxExpected) {
             const bool accepted = !_rxDiscard;
+            const bool streaming = _rxStreaming;
             const size_t messageLength = _rxExpected;
             _rxDiscard = false;
+            _rxStreaming = false;
             _rxExpected = 0;
             _rxReceived = 0;
 
             if (!accepted) {
               sendResult(false);
+            } else if (streaming) {
+              sendResult(notifyStream(EasyBLEStreamStatus::End, messageLength,
+                                      nullptr, 0));
             } else {
               _rxMessage[messageLength] = 0;
               if (sendResult(true) && _onReceive) {
@@ -347,7 +410,34 @@ void EasyBLEClass::processIncoming(const uint8_t* data, size_t length) {
                 _onReceive(message);
               }
             }
+            shrinkRxBuffer();
           }
+        }
+        break;
+      }
+      case RxParseState::OfferType: {
+        const auto type = static_cast<EasyBLEMessageType>(data[offset++]);
+        if (type != EasyBLEMessageType::Text &&
+            type != EasyBLEMessageType::Image) {
+          fail();
+          break;
+        }
+        _rxType = type;
+        _rxHeaderLength = 0;
+        _rxState = RxParseState::OfferLength;
+        break;
+      }
+      case RxParseState::OfferLength: {
+        _rxHeader[_rxHeaderLength++] = data[offset++];
+        if (_rxHeaderLength == sizeof(uint32_t)) {
+          const uint32_t messageLength = readUint32(_rxHeader);
+          _rxState = RxParseState::Opcode;
+          _rxHeaderLength = 0;
+          bool accepted = messageLength > 0;
+          if (accepted && _onStreamRequest) {
+            accepted = _onStreamRequest(_rxType, messageLength);
+          }
+          sendResult(accepted);
         }
         break;
       }
@@ -391,7 +481,22 @@ bool EasyBLEClass::sendResult(bool accepted) {
   return true;
 }
 
+bool EasyBLEClass::notifyStream(EasyBLEStreamStatus status, size_t totalLength,
+                                const uint8_t* data, size_t length) {
+  const EasyBLEStreamEvent event = {status, _rxType, totalLength, data, length};
+  return _onStream(event);
+}
+
+void EasyBLEClass::abortStream() {
+  if (!_rxStreaming) {
+    return;
+  }
+  _rxStreaming = false;
+  notifyStream(EasyBLEStreamStatus::Aborted, _rxExpected, nullptr, 0);
+}
+
 void EasyBLEClass::resetLink() {
+  abortStream();
   resetSend();
   _rxState = RxParseState::Opcode;
   _rxType = EasyBLEMessageType::Text;
@@ -439,6 +544,7 @@ void EasyBLEBackend::didDisconnect() {
   EasyBLE._connected = false;
   const bool sendUnresolved = EasyBLE._txMessage != nullptr;
   EasyBLE.resetLink();
+  EasyBLE.shrinkRxBuffer();
 
   if (sendUnresolved && EasyBLE._onSendResult) {
     EasyBLE._onSendResult(false);

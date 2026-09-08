@@ -64,6 +64,7 @@ StreamCallbacks streamCallbacks;
 
 NimBLEStream::RxOverflowAction onRxOverflow(const uint8_t*, size_t, void*) {
   rxOverflowed = true;
+  Serial.println("[ble] rx overflow");
   return NimBLEStream::DROP_NEW_DATA;
 }
 
@@ -106,9 +107,9 @@ bool EasyBLEBackend::begin(const char* deviceName, uint32_t txBufferSize,
   deviceToPhoneStream.setCallbacks(&streamCallbacks);
 
   NimBLEAdvertising* advertising = NimBLEDevice::getAdvertising();
-  advertising->setName(deviceName);
-  advertising->addServiceUUID(EASYBLE_SERVICE_UUID);
   advertising->enableScanResponse(true);
+  advertising->addServiceUUID(EASYBLE_SERVICE_UUID);
+  advertising->setName(deviceName);
   advertising->start();
   return true;
 }

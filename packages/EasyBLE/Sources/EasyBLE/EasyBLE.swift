@@ -1,7 +1,10 @@
 #if os(iOS)
 import AccessorySetupKit
 import CoreBluetooth
+import os
 import UIKit
+
+private let easyBLELog = Logger(subsystem: "EasyBLE", category: "link")
 
 public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     private let session = ASAccessorySession()
@@ -21,6 +24,7 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
     private var txType = EasyBLEMessageType.text
     private var txOffset = 0
     private var awaitingResult = false
+    private var awaitingOfferAck = false
     private var resultTimeout: Task<Void, Never>?
     private var writeInFlight = false
 
@@ -33,7 +37,7 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
             self?.receivedResult(status)
         }
         parser.onError = { [weak self] in
-            self?.fail()
+            self?.fail("parser error")
         }
         session.activate(on: .main) { [weak self] event in
             self?.handleSessionEvent(event)
@@ -41,15 +45,21 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
     }
 
     public func pair(name: String, image: UIImage) async throws {
+        easyBLELog.info("pair name=\(name, privacy: .public)")
         let descriptor = ASDiscoveryDescriptor()
         descriptor.bluetoothServiceUUID = CBUUID(string: EasyBLEProtocol.serviceUUID)
         try await session.showPicker(for: [
             ASPickerDisplayItem(name: name, productImage: image, descriptor: descriptor)
         ])
+        easyBLELog.info("pair picker finished")
     }
 
     public func unpair() async throws {
-        guard let accessory else { return }
+        guard let accessory else {
+            easyBLELog.info("unpair skipped no accessory")
+            return
+        }
+        easyBLELog.info("unpair")
         try await session.removeAccessory(accessory)
     }
 
@@ -65,14 +75,35 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
 
     @discardableResult
     public func send(_ type: EasyBLEMessageType, data: Data) -> Bool {
-        guard sessionReady, !awaitingResult, !data.isEmpty,
-              data.count <= EasyBLEProtocol.maxMessageSize else {
+        let typeName = type == .image ? "image" : "text"
+        guard sessionReady else {
+            easyBLELog.error("send rejected type=\(typeName, privacy: .public) bytes=\(data.count) reason=not-connected")
             return false
         }
+        guard !awaitingResult else {
+            easyBLELog.error("send rejected type=\(typeName, privacy: .public) bytes=\(data.count) reason=already-sending")
+            return false
+        }
+        guard !data.isEmpty else {
+            easyBLELog.error("send rejected type=\(typeName, privacy: .public) reason=empty")
+            return false
+        }
+        guard data.count <= EasyBLEProtocol.maxMessageSize else {
+            easyBLELog.error("send rejected type=\(typeName, privacy: .public) bytes=\(data.count) reason=too-large max=\(EasyBLEProtocol.maxMessageSize)")
+            return false
+        }
+        easyBLELog.info("send start type=\(typeName, privacy: .public) bytes=\(data.count) writeWithoutResponse=\(self.phoneToDevice?.properties.contains(.writeWithoutResponse) == true)")
         awaitingResult = true
         txPayload = data
         txType = type
         txOffset = 0
+        if type == .image {
+            awaitingOfferAck = true
+            outgoing = EasyBLEProtocol.offerFrame(type: type, length: data.count)
+            easyBLELog.info("offer type=\(typeName, privacy: .public) bytes=\(data.count)")
+        } else {
+            awaitingOfferAck = false
+        }
         armResultTimeout()
         pumpWrites()
         return true
@@ -104,11 +135,13 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
     }
 
     public func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        easyBLELog.info("central state=\(central.state.rawValue)")
         guard central.state == .poweredOn else { return }
         reconnect()
     }
 
     public func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        easyBLELog.info("didConnect \(peripheral.identifier.uuidString, privacy: .public)")
         parser.reset()
         peripheral.delegate = self
         peripheral.discoverServices([CBUUID(string: EasyBLEProtocol.serviceUUID)])
@@ -121,6 +154,7 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
         isReconnecting: Bool,
         error: Error?
     ) {
+        easyBLELog.error("didDisconnect reconnecting=\(isReconnecting) error=\(error?.localizedDescription ?? "none", privacy: .public)")
         resetLink()
         if !isReconnecting {
             reconnect()
@@ -128,10 +162,16 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
     }
 
     public func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+        if let error {
+            easyBLELog.error("discoverServices \(error.localizedDescription, privacy: .public)")
+        }
         guard error == nil,
               let service = peripheral.services?.first(where: {
                   $0.uuid == CBUUID(string: EasyBLEProtocol.serviceUUID)
-              }) else { return }
+              }) else {
+            easyBLELog.error("EasyBLE service missing")
+            return
+        }
         peripheral.discoverCharacteristics(
             [
                 CBUUID(string: EasyBLEProtocol.deviceToPhoneUUID),
@@ -146,11 +186,15 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
         didDiscoverCharacteristicsFor service: CBService,
         error: Error?
     ) {
+        if let error {
+            easyBLELog.error("discoverCharacteristics \(error.localizedDescription, privacy: .public)")
+        }
         guard error == nil, let characteristics = service.characteristics else { return }
         let deviceToPhoneUUID = CBUUID(string: EasyBLEProtocol.deviceToPhoneUUID)
         let phoneToDeviceUUID = CBUUID(string: EasyBLEProtocol.phoneToDeviceUUID)
         guard let deviceToPhone = characteristics.first(where: { $0.uuid == deviceToPhoneUUID }),
               let phoneToDevice = characteristics.first(where: { $0.uuid == phoneToDeviceUUID }) else {
+            easyBLELog.error("EasyBLE characteristics missing found=\(characteristics.map(\.uuid.uuidString).joined(separator: ","), privacy: .public)")
             return
         }
         self.deviceToPhone = deviceToPhone
@@ -163,17 +207,18 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
         didUpdateNotificationStateFor characteristic: CBCharacteristic,
         error: Error?
     ) {
-        if error != nil {
-            fail()
+        if let error {
+            fail("notify \(error.localizedDescription)")
             return
         }
         guard characteristic.uuid == CBUUID(string: EasyBLEProtocol.deviceToPhoneUUID) else { return }
         if characteristic.isNotifying {
             guard !sessionReady else { return }
+            easyBLELog.info("session ready mtu=\(peripheral.maximumWriteValueLength(for: .withoutResponse))")
             sessionReady = true
             connectHandler?()
         } else if sessionReady {
-            fail()
+            fail("notifications stopped")
         }
     }
 
@@ -182,9 +227,13 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
         didUpdateValueFor characteristic: CBCharacteristic,
         error: Error?
     ) {
-        if error != nil { fail(); return }
+        if let error {
+            fail("updateValue \(error.localizedDescription)")
+            return
+        }
         guard characteristic.uuid == CBUUID(string: EasyBLEProtocol.deviceToPhoneUUID) else { return }
         guard let value = characteristic.value, !value.isEmpty else { return }
+        easyBLELog.info("rx \(value.count) bytes")
         parser.append(value)
     }
 
@@ -195,8 +244,8 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
     ) {
         guard characteristic.uuid == CBUUID(string: EasyBLEProtocol.phoneToDeviceUUID) else { return }
         writeInFlight = false
-        if error != nil {
-            fail()
+        if let error {
+            fail("write \(error.localizedDescription)")
             return
         }
         pumpWrites()
@@ -207,12 +256,16 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
     }
 
     private func handleSessionEvent(_ event: ASAccessoryEvent) {
+        easyBLELog.info("session event=\(String(describing: event.eventType), privacy: .public)")
         switch event.eventType {
         case .accessoryAdded, .accessoryChanged:
             guard let accessory = event.accessory else { return }
             use(accessory)
         case .activated:
-            guard let accessory = session.accessories.first else { return }
+            guard let accessory = session.accessories.first else {
+                easyBLELog.info("session activated with no accessory")
+                return
+            }
             use(accessory)
         case .accessoryRemoved:
             accessory = nil
@@ -225,6 +278,7 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
     }
 
     private func use(_ accessory: ASAccessory) {
+        easyBLELog.info("use accessory \(accessory.bluetoothIdentifier?.uuidString ?? "nil", privacy: .public)")
         self.accessory = accessory
         if central == nil {
             central = CBCentralManager(
@@ -238,12 +292,21 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
     }
 
     private func reconnect() {
-        guard let central, let id = accessory?.bluetoothIdentifier else { return }
+        guard let central else {
+            easyBLELog.info("reconnect skipped no central")
+            return
+        }
+        guard let id = accessory?.bluetoothIdentifier else {
+            easyBLELog.info("reconnect skipped no accessory id")
+            return
+        }
         guard let peripheral = central.retrievePeripherals(withIdentifiers: [id]).first ?? self.peripheral else {
+            easyBLELog.error("reconnect no peripheral for \(id.uuidString, privacy: .public)")
             return
         }
         self.peripheral = peripheral
         peripheral.delegate = self
+        easyBLELog.info("connect \(id.uuidString, privacy: .public) state=\(peripheral.state.rawValue)")
         central.connect(peripheral, options: [
             CBConnectPeripheralOptionEnableAutoReconnect: true,
         ])
@@ -251,28 +314,46 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
 
     private func received(type: UInt8, data: Data) {
         guard let type = EasyBLEMessageType(rawValue: type) else {
-            fail()
+            fail("unknown message type \(type)")
             return
         }
+        let typeName = type == .image ? "image" : "text"
+        let preview = String(data: data, encoding: .utf8) ?? "\(data.count) bytes"
+        easyBLELog.info("message \(typeName, privacy: .public) \(preview, privacy: .public)")
         outgoing.append(EasyBLEProtocol.resultFrame(true))
         pumpWrites()
         receiveHandler?(EasyBLEMessage(type: type, data: data))
     }
 
     private func receivedResult(_ status: UInt8) {
+        easyBLELog.info("result status=\(status) offer=\(self.awaitingOfferAck) awaiting=\(self.awaitingResult) remaining=\(self.txPayload?.count ?? 0)")
         guard awaitingResult, status <= 1 else {
-            fail()
+            fail("unexpected result status=\(status) awaiting=\(awaitingResult)")
+            return
+        }
+        if awaitingOfferAck {
+            if status != 1 {
+                easyBLELog.error("offer rejected")
+                finishSend(false)
+                return
+            }
+            awaitingOfferAck = false
+            easyBLELog.info("offer accepted")
+            armResultTimeout()
+            pumpWrites()
             return
         }
         if status == 1, txPayload != nil {
-            fail()
+            fail("device nack with \(txPayload?.count ?? 0) bytes remaining")
             return
         }
         finishSend(status == 1)
     }
 
     private func finishSend(_ success: Bool) {
+        easyBLELog.info("send finished success=\(success)")
         awaitingResult = false
+        awaitingOfferAck = false
         resultTimeout?.cancel()
         txPayload = nil
         txOffset = 0
@@ -282,7 +363,9 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
     private func nextFrame() -> Data? {
         guard let payload = txPayload else { return nil }
         let frame = EasyBLEProtocol.frame(type: txType, payload: payload, offset: txOffset)
+        let offset = txOffset
         txOffset += min(EasyBLEProtocol.chunkPayloadSize, payload.count - txOffset)
+        easyBLELog.info("frame type=\(self.txType.rawValue) offset=\(offset)/\(payload.count) frame=\(frame.count)")
         if txOffset == payload.count {
             txPayload = nil
         }
@@ -291,12 +374,18 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
     }
 
     private func pumpWrites() {
-        guard let peripheral, let phoneToDevice else { return }
+        guard let peripheral, let phoneToDevice else {
+            easyBLELog.error("pumpWrites blocked peripheral=\(self.peripheral != nil) characteristic=\(self.phoneToDevice != nil) outgoing=\(self.outgoing.count)")
+            return
+        }
         let writeType: CBCharacteristicWriteType =
             phoneToDevice.properties.contains(.writeWithoutResponse) ? .withoutResponse : .withResponse
 
         while true {
             if outgoing.isEmpty {
+                if awaitingOfferAck {
+                    return
+                }
                 guard let frame = nextFrame() else { return }
                 outgoing = frame
             }
@@ -321,11 +410,12 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
         resultTimeout = Task { [weak self] in
             try? await Task.sleep(for: .seconds(EasyBLEProtocol.resultTimeout))
             guard !Task.isCancelled else { return }
-            self?.fail()
+            self?.fail("result timeout after \(EasyBLEProtocol.resultTimeout)s")
         }
     }
 
-    private func fail() {
+    private func fail(_ reason: String) {
+        easyBLELog.error("fail \(reason, privacy: .public) connected=\(self.sessionReady) sending=\(self.awaitingResult) offset=\(self.txOffset) outgoing=\(self.outgoing.count)")
         resetLink()
         if let peripheral {
             central?.cancelPeripheralConnection(peripheral)
@@ -337,6 +427,7 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
         let sendUnresolved = awaitingResult
         sessionReady = false
         awaitingResult = false
+        awaitingOfferAck = false
         resultTimeout?.cancel()
         parser.reset()
         deviceToPhone = nil

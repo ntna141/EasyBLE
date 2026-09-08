@@ -1,4 +1,7 @@
 import Foundation
+import os
+
+private let parserLog = Logger(subsystem: "EasyBLE", category: "parser")
 
 package final class StreamParser {
     private var buffer = Data()
@@ -35,6 +38,7 @@ package final class StreamParser {
 
             case EasyBLEProtocol.begin:
                 guard messageType == nil else {
+                    parserLog.error("begin while message already open")
                     onError?()
                     return
                 }
@@ -48,12 +52,14 @@ package final class StreamParser {
                 let chunkLength = Int(UInt16(buffer[start.advanced(by: 6)])
                     | (UInt16(buffer[start.advanced(by: 7)]) << 8))
                 guard length > 0, length <= EasyBLEProtocol.maxMessageSize else {
+                    parserLog.error("invalid begin length=\(length)")
                     onError?()
                     return
                 }
                 guard chunkLength > 0,
                       chunkLength <= EasyBLEProtocol.chunkPayloadSize,
                       chunkLength <= Int(length) else {
+                    parserLog.error("invalid begin chunkLength=\(chunkLength) length=\(length)")
                     onError?()
                     return
                 }
@@ -67,6 +73,7 @@ package final class StreamParser {
 
             case EasyBLEProtocol.continueOpcode:
                 guard messageType != nil else {
+                    parserLog.error("continue without begin")
                     onError?()
                     return
                 }
@@ -78,6 +85,7 @@ package final class StreamParser {
                 guard chunkLength > 0,
                       chunkLength <= EasyBLEProtocol.chunkPayloadSize,
                       chunkLength <= remaining else {
+                    parserLog.error("invalid continue chunkLength=\(chunkLength) remaining=\(remaining)")
                     onError?()
                     return
                 }
@@ -88,6 +96,7 @@ package final class StreamParser {
                 finishChunk()
 
             default:
+                parserLog.error("unknown opcode \(self.buffer[self.buffer.startIndex])")
                 onError?()
                 return
             }
