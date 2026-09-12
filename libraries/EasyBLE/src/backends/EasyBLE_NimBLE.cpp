@@ -5,7 +5,7 @@
 #include <atomic>
 
 #include "../EasyBLE.h"
-#include "../EasyBLE_UUIDs.h"
+#include "../EasyBLE_Protocol.h"
 #include "EasyBLE_Backend.h"
 
 namespace {
@@ -82,15 +82,15 @@ bool EasyBLEBackend::begin(const char* deviceName, uint32_t txBufferSize,
   server->advertiseOnDisconnect(true);
 
   NimBLEService* service =
-      server->createService(NimBLEUUID(EASYBLE_SERVICE_UUID));
+      server->createService(NimBLEUUID(EasyBLEProtocol::ServiceUUID));
   NimBLECharacteristic* deviceToPhone = service == nullptr
       ? nullptr
       : service->createCharacteristic(
-            NimBLEUUID(EASYBLE_DEVICE_TO_PHONE_UUID), NIMBLE_PROPERTY::NOTIFY);
+            NimBLEUUID(EasyBLEProtocol::DeviceToPhoneUUID), NIMBLE_PROPERTY::NOTIFY);
   NimBLECharacteristic* phoneToDevice = service == nullptr
       ? nullptr
       : service->createCharacteristic(
-            NimBLEUUID(EASYBLE_PHONE_TO_DEVICE_UUID),
+            NimBLEUUID(EasyBLEProtocol::PhoneToDeviceUUID),
             NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
 
   if (deviceToPhone == nullptr || phoneToDevice == nullptr ||
@@ -107,7 +107,7 @@ bool EasyBLEBackend::begin(const char* deviceName, uint32_t txBufferSize,
 
   NimBLEAdvertising* advertising = NimBLEDevice::getAdvertising();
   advertising->enableScanResponse(true);
-  advertising->addServiceUUID(EASYBLE_SERVICE_UUID);
+  advertising->addServiceUUID(EasyBLEProtocol::ServiceUUID);
   advertising->setName(deviceName);
   advertising->start();
   return true;

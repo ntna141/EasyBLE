@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include "EasyBLE_Config.h"
+#include "EasyBLE_Channel.h"
 
 enum class EasyBLEMessageType : uint8_t {
   Text = 0x01,
@@ -51,6 +52,8 @@ public:
   void onDisconnect(DisconnectHandler handler);
   void onSendResult(SendResultHandler handler);
 
+  EasyBLEChannel& channel();
+
   // The data is copied internally, so the caller's buffer can be reused as
   // soon as this returns. Returns false if the copy cannot be allocated.
   bool send(EasyBLEMessageType type, const uint8_t* data, size_t length);
@@ -60,6 +63,7 @@ public:
 
 private:
   friend struct EasyBLEBackend;
+  friend class EasyBLEChannel;
 
   enum class RxParseState : uint8_t {
     Opcode,
@@ -68,6 +72,7 @@ private:
     ChunkLength,
     ChunkPayload,
     ResultStatus,
+    ControlValue,
   };
 
   void processIncoming(const uint8_t* data, size_t length);
@@ -93,6 +98,7 @@ private:
   ConnectHandler _onConnect = nullptr;
   DisconnectHandler _onDisconnect = nullptr;
   SendResultHandler _onSendResult = nullptr;
+  EasyBLEChannel _channel;
 
   uint32_t _maxMessage = EasyBLEDefaultMaxMessage;
   uint32_t _rxStartupCapacity = 0;

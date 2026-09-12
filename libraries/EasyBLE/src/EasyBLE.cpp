@@ -3,53 +3,20 @@
 #include <esp_heap_caps.h>
 #include <string.h>
 
+#include "EasyBLE_Protocol.h"
 #include "backends/EasyBLE_Backend.h"
+
+using namespace EasyBLEProtocol;
 
 namespace {
 
-constexpr uint8_t OpcodeResult = 0x02;
-constexpr uint8_t OpcodeBegin = 0x03;
-constexpr uint8_t OpcodeContinue = 0x04;
-constexpr uint8_t OpcodeOffer = 0x05;
-constexpr uint8_t OpcodeAck = 0x06;
+constexpr size_t MaxChunkFrameSize = BeginHeaderSize + ChunkPayloadSize;
 
-constexpr size_t BeginHeaderSize = 8;
-constexpr size_t ContinueHeaderSize = 3;
-constexpr size_t ResultRecordSize = 2;
-constexpr size_t AckRecordSize = 1;
-constexpr size_t ControlRecordsSize = 2 * (ResultRecordSize + AckRecordSize);
-
-constexpr size_t MaxChunkFrameSize =
-    BeginHeaderSize + EasyBLEChunkPayloadSize;
-
-constexpr size_t TxBufferSize = MaxChunkFrameSize + ControlRecordsSize;
+constexpr size_t TxBufferSize =
+    MaxChunkFrameSize + ControlRecordsSize + EasyBLEChannelReserve;
 constexpr size_t RxBufferSize = MaxChunkFrameSize + ControlRecordsSize;
 
-constexpr size_t ReadChunkSize = 244;
-
-uint32_t readUint32(const uint8_t* data) {
-  return static_cast<uint32_t>(data[0]) |
-      (static_cast<uint32_t>(data[1]) << 8) |
-      (static_cast<uint32_t>(data[2]) << 16) |
-      (static_cast<uint32_t>(data[3]) << 24);
-}
-
-uint16_t readUint16(const uint8_t* data) {
-  return static_cast<uint16_t>(data[0]) |
-      (static_cast<uint16_t>(data[1]) << 8);
-}
-
-void writeUint32(uint8_t* data, uint32_t value) {
-  data[0] = static_cast<uint8_t>(value);
-  data[1] = static_cast<uint8_t>(value >> 8);
-  data[2] = static_cast<uint8_t>(value >> 16);
-  data[3] = static_cast<uint8_t>(value >> 24);
-}
-
-void writeUint16(uint8_t* data, uint16_t value) {
-  data[0] = static_cast<uint8_t>(value);
-  data[1] = static_cast<uint8_t>(value >> 8);
-}
+constexpr size_t ReadChunkSize = DataHeaderSize + DataMaxPayload;
 
 uint8_t* allocateMessage(size_t length) {
   return static_cast<uint8_t*>(heap_caps_malloc_prefer(
@@ -175,7 +142,14 @@ void EasyBLEClass::update() {
     return;
   }
 
-  if (_awaitingResult && millis() - _sendStart >= EasyBLEResultTimeoutMs) {
+  const bool sendPending = _txMessage != nullptr && _txOffset < _txLength;
+  _channel.pump(sendPending ? MaxChunkFrameSize + ControlRecordsSize
+                            : ControlRecordsSize);
+  if (!_connected || _failed) {
+    return;
+  }
+
+  if (_awaitingResult && millis() - _sendStart >= ResultTimeoutMs) {
     fail();
   }
 }
@@ -198,6 +172,10 @@ void EasyBLEClass::onDisconnect(DisconnectHandler handler) {
 
 void EasyBLEClass::onSendResult(SendResultHandler handler) {
   _onSendResult = handler;
+}
+
+EasyBLEChannel& EasyBLEClass::channel() {
+  return _channel;
 }
 
 bool EasyBLEClass::send(EasyBLEMessageType type, const uint8_t* data,
@@ -237,8 +215,7 @@ bool EasyBLEClass::pumpSend() {
 
   const uint32_t remaining = _txLength - _txOffset;
   const uint16_t chunkLength = static_cast<uint16_t>(
-      remaining < EasyBLEChunkPayloadSize ? remaining
-                                          : EasyBLEChunkPayloadSize);
+      remaining < ChunkPayloadSize ? remaining : ChunkPayloadSize);
 
   uint8_t header[BeginHeaderSize];
   size_t headerLength;
@@ -331,6 +308,9 @@ void EasyBLEClass::processIncoming(const uint8_t* data, size_t length) {
             _rxHeaderLength = 0;
             _rxState = RxParseState::ChunkLength;
             break;
+          case OpcodeControl:
+            _rxState = RxParseState::ControlValue;
+            break;
           default:
             fail();
             break;
@@ -387,7 +367,7 @@ void EasyBLEClass::processIncoming(const uint8_t* data, size_t length) {
         if (_rxHeaderLength == sizeof(uint16_t)) {
           const uint16_t chunkLength = readUint16(_rxHeader);
           const size_t remaining = _rxExpected - _rxReceived;
-          if (chunkLength == 0 || chunkLength > EasyBLEChunkPayloadSize ||
+          if (chunkLength == 0 || chunkLength > ChunkPayloadSize ||
               chunkLength > remaining) {
             fail();
             break;
@@ -477,6 +457,16 @@ void EasyBLEClass::processIncoming(const uint8_t* data, size_t length) {
         }
         break;
       }
+      case RxParseState::ControlValue: {
+        const uint8_t value = data[offset++];
+        _rxState = RxParseState::Opcode;
+        if (value > 1) {
+          fail();
+          break;
+        }
+        _channel.handleControl(value == 1);
+        break;
+      }
     }
   }
 }
@@ -524,6 +514,7 @@ void EasyBLEClass::abortStream() {
 void EasyBLEClass::resetLink() {
   abortStream();
   resetSend();
+  _channel.reset();
   _rxState = RxParseState::Opcode;
   _rxType = EasyBLEMessageType::Text;
   _rxChunkExpected = 0;

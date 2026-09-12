@@ -18,6 +18,8 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
     private var connectHandler: (() -> Void)?
     private var disconnectHandler: (() -> Void)?
     private var sendResultHandler: ((Bool) -> Void)?
+    private var channelOpenHandler: ((EasyBLEIncomingChannel) -> Void)?
+    private var channel: EasyBLEIncomingChannel?
     private var sessionReady = false
     private var outgoing = Data()
     private var txPayload: Data?
@@ -42,6 +44,12 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
         }
         parser.onAck = { [weak self] in
             self?.receivedAck()
+        }
+        parser.onChannelHeader = { [weak self] descriptor in
+            self?.channelOffered(descriptor)
+        }
+        parser.onChannelEvent = { [weak self] event in
+            self?.receivedChannelEvent(event)
         }
         parser.onError = { [weak self] in
             self?.fail("parser error")
@@ -133,6 +141,24 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
 
     public func onSendResult(_ handler: @escaping (Bool) -> Void) {
         sendResultHandler = handler
+    }
+
+    public func onChannelOpen(_ handler: @escaping (EasyBLEIncomingChannel) -> Void) {
+        channelOpenHandler = handler
+    }
+
+    @discardableResult
+    public func requestChannel() -> Bool {
+        guard sessionReady else {
+            easyBLELog.error("requestChannel rejected reason=not-connected")
+            return false
+        }
+        guard channel == nil else {
+            easyBLELog.error("requestChannel rejected reason=channel-open")
+            return false
+        }
+        enqueue(EasyBLEProtocol.controlFrame(true))
+        return true
     }
 
     public func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
@@ -330,6 +356,41 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
         receiveHandler?(EasyBLEMessage(type: type, data: data))
     }
 
+    private func channelOffered(_ descriptor: Data) {
+        channel?.end()
+        let opened = EasyBLEIncomingChannel(descriptor: descriptor) { [weak self] channel, enabled in
+            self?.sendChannelControl(enabled, for: channel)
+        }
+        channel = opened
+        easyBLELog.info("channel offered descriptor=\(descriptor.count) bytes handler=\(self.channelOpenHandler != nil)")
+        channelOpenHandler?(opened)
+    }
+
+    private func receivedChannelEvent(_ event: EasyBLEChannelEvent) {
+        guard let channel else {
+            easyBLELog.error("channel event without offer")
+            return
+        }
+        channel.deliver(event)
+        if case .ended = event {
+            easyBLELog.info("channel ended by device")
+            self.channel = nil
+        }
+    }
+
+    private func sendChannelControl(_ enabled: Bool, for channel: EasyBLEIncomingChannel) {
+        guard channel === self.channel else { return }
+        guard sessionReady else {
+            easyBLELog.error("channel control dropped enabled=\(enabled) reason=not-connected")
+            return
+        }
+        easyBLELog.info("channel control enabled=\(enabled)")
+        enqueue(EasyBLEProtocol.controlFrame(enabled))
+        if !enabled {
+            self.channel = nil
+        }
+    }
+
     private func enqueue(_ frame: Data) {
         outgoing.append(frame)
         pumpWrites()
@@ -454,6 +515,8 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
         awaitingChunkAck = false
         resultTimeout?.cancel()
         parser.reset()
+        channel?.end()
+        channel = nil
         deviceToPhone = nil
         phoneToDevice = nil
         outgoing.removeAll()

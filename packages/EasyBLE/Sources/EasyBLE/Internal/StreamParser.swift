@@ -13,6 +13,8 @@ package final class StreamParser {
     package var onChunk: (() -> Void)?
     package var onResult: ((UInt8) -> Void)?
     package var onAck: (() -> Void)?
+    package var onChannelHeader: ((Data) -> Void)?
+    package var onChannelEvent: ((EasyBLEChannelEvent) -> Void)?
     package var onError: (() -> Void)?
 
     package init() {}
@@ -101,12 +103,57 @@ package final class StreamParser {
                 buffer.removeFirst(frameLength)
                 finishChunk()
 
+            case EasyBLEProtocol.data:
+                guard buffer.count >= EasyBLEProtocol.dataHeaderSize else { return }
+                let start = buffer.startIndex
+                let flags = buffer[start.advanced(by: 1)]
+                let length = Int(UInt16(buffer[start.advanced(by: 2)])
+                    | (UInt16(buffer[start.advanced(by: 3)]) << 8))
+                guard length <= EasyBLEProtocol.channelMaxPayload else {
+                    parserLog.error("invalid data length=\(length)")
+                    onError?()
+                    return
+                }
+                let frameLength = EasyBLEProtocol.dataHeaderSize + length
+                guard buffer.count >= frameLength else { return }
+                let payload = Data(buffer[start.advanced(by: EasyBLEProtocol.dataHeaderSize)..<start.advanced(by: frameLength)])
+                buffer.removeFirst(frameLength)
+                guard deliverChannelFrame(flags: flags, payload: payload) else {
+                    onError?()
+                    return
+                }
+
             default:
                 parserLog.error("unknown opcode \(self.buffer[self.buffer.startIndex])")
                 onError?()
                 return
             }
         }
+    }
+
+    private func deliverChannelFrame(flags: UInt8, payload: Data) -> Bool {
+        if flags & EasyBLEProtocol.dataFlagHeader != 0 {
+            onChannelHeader?(payload)
+            return true
+        }
+        var body = payload
+        if flags & EasyBLEProtocol.dataFlagGap != 0 {
+            guard body.count >= EasyBLEProtocol.gapPrefixSize else {
+                parserLog.error("gap frame too short length=\(body.count)")
+                return false
+            }
+            let start = body.startIndex
+            let dropped = Int(body[start]) | (Int(body[start.advanced(by: 1)]) << 8)
+            body = Data(body.dropFirst(EasyBLEProtocol.gapPrefixSize))
+            onChannelEvent?(.gap(droppedBytes: dropped))
+        }
+        if !body.isEmpty {
+            onChannelEvent?(.data(body))
+        }
+        if flags & EasyBLEProtocol.dataFlagEnd != 0 {
+            onChannelEvent?(.ended)
+        }
+        return true
     }
 
     private func finishChunk() {

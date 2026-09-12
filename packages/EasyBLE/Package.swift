@@ -11,6 +11,7 @@ let package = Package(
     products: [
         .library(name: "EasyBLE", targets: ["EasyBLE"]),
         .executable(name: "EasyBLEHardwareRunner", targets: ["EasyBLEHardwareRunner"]),
+        .executable(name: "EasyBLEAudio", targets: ["EasyBLEAudioCLI"]),
     ],
     targets: [
         .target(
@@ -34,6 +35,18 @@ let package = Package(
             ],
             linkerSettings: [
                 .linkedFramework("CoreBluetooth"),
+            ]
+        ),
+        .executableTarget(
+            name: "EasyBLEAudioCLI",
+            dependencies: ["EasyBLE"],
+            exclude: ["Info.plist"],
+            swiftSettings: [
+                .defaultIsolation(MainActor.self),
+            ],
+            linkerSettings: [
+                .linkedFramework("CoreBluetooth"),
+                .linkedFramework("AVFoundation"),
             ]
         ),
         .testTarget(

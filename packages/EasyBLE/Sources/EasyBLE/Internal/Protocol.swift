@@ -10,7 +10,15 @@ package enum EasyBLEProtocol {
     package static let continueOpcode: UInt8 = 0x04
     package static let offer: UInt8 = 0x05
     package static let ack: UInt8 = 0x06
+    package static let data: UInt8 = 0x07
+    package static let control: UInt8 = 0x08
     package static let ackFrame = Data([ack])
+    package static let dataFlagHeader: UInt8 = 0x01
+    package static let dataFlagGap: UInt8 = 0x02
+    package static let dataFlagEnd: UInt8 = 0x04
+    package static let dataHeaderSize = 4
+    package static let gapPrefixSize = 2
+    package static let channelMaxPayload = 240
     package static let chunkPayloadSize = 3_072
     package static let offerThreshold = chunkPayloadSize
     package static let maxMessageSize = 8 * 1024 * 1024
@@ -42,5 +50,9 @@ package enum EasyBLEProtocol {
         var littleEndianLength = UInt32(length).littleEndian
         withUnsafeBytes(of: &littleEndianLength) { frame.append(contentsOf: $0) }
         return frame
+    }
+
+    package static func controlFrame(_ enabled: Bool) -> Data {
+        Data([control, enabled ? 1 : 0])
     }
 }
