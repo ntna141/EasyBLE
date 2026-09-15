@@ -19,6 +19,8 @@ StreamServer deviceToPhoneStream;
 StreamServer phoneToDeviceStream;
 std::atomic<bool> rxOverflowed{false};
 std::atomic<bool> sessionEnded{false};
+std::atomic<uint16_t> pendingHandle{BLE_HS_CONN_HANDLE_NONE};
+std::atomic<uint32_t> pendingSince{0};
 
 void discardSessionIo() {
   deviceToPhoneStream.flush();
@@ -40,9 +42,14 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     server->updatePhy(connectionHandle, BLE_GAP_LE_PHY_2M_MASK,
                       BLE_GAP_LE_PHY_2M_MASK, 0);
     server->setDataLen(connectionHandle, 251);
+    pendingSince = millis();
+    pendingHandle = connectionHandle;
   }
 
   void onDisconnect(NimBLEServer*, NimBLEConnInfo& connInfo, int) override {
+    if (pendingHandle == connInfo.getConnHandle()) {
+      pendingHandle = BLE_HS_CONN_HANDLE_NONE;
+    }
     if (deviceToPhoneStream.getPeerHandle() == connInfo.getConnHandle()) {
       endSession();
     }
@@ -147,6 +154,22 @@ void EasyBLEBackend::poll() {
 
   if (ready() && !EasyBLE._connected) {
     didConnect();
+  }
+
+  const uint16_t pending = pendingHandle.load();
+  if (pending == BLE_HS_CONN_HANDLE_NONE) {
+    return;
+  }
+  if (ready()) {
+    pendingHandle = BLE_HS_CONN_HANDLE_NONE;
+    return;
+  }
+  if (millis() - pendingSince.load() >= EasyBLEProtocol::SetupTimeoutMs) {
+    pendingHandle = BLE_HS_CONN_HANDLE_NONE;
+    NimBLEServer* server = NimBLEDevice::getServer();
+    if (server != nullptr) {
+      server->disconnect(pending);
+    }
   }
 }
 

@@ -23,6 +23,7 @@ package enum EasyBLEProtocol {
     package static let offerThreshold = chunkPayloadSize
     package static let maxMessageSize = 8 * 1024 * 1024
     package static let resultTimeout: TimeInterval = 15
+    package static let setupTimeout: TimeInterval = 10
 
     package static func frame(type: EasyBLEMessageType, payload: Data, offset: Int) -> Data {
         let chunkLength = min(chunkPayloadSize, payload.count - offset)

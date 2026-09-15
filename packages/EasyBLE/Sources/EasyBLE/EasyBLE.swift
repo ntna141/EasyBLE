@@ -29,6 +29,7 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
     private var awaitingOfferAck = false
     private var awaitingChunkAck = false
     private var resultTimeout: Task<Void, Never>?
+    private var setupTimeout: Task<Void, Never>?
     private var writeInFlight = false
 
     public override init() {
@@ -176,6 +177,7 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
         easyBLELog.info("didConnect \(peripheral.identifier.uuidString, privacy: .public)")
         parser.reset()
         peripheral.delegate = self
+        armSetupTimeout()
         peripheral.discoverServices([CBUUID(string: EasyBLEProtocol.serviceUUID)])
     }
 
@@ -247,6 +249,7 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
         if characteristic.isNotifying {
             guard !sessionReady else { return }
             easyBLELog.info("session ready mtu=\(peripheral.maximumWriteValueLength(for: .withoutResponse))")
+            setupTimeout?.cancel()
             sessionReady = true
             connectHandler?()
         } else if sessionReady {
@@ -338,6 +341,14 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
         }
         self.peripheral = peripheral
         peripheral.delegate = self
+        if peripheral.state == .connected {
+            if sessionReady {
+                return
+            }
+            easyBLELog.info("dropping stale link \(id.uuidString, privacy: .public)")
+            central.cancelPeripheralConnection(peripheral)
+            return
+        }
         easyBLELog.info("connect \(id.uuidString, privacy: .public) state=\(peripheral.state.rawValue)")
         central.connect(peripheral, options: [
             CBConnectPeripheralOptionEnableAutoReconnect: true,
@@ -498,6 +509,15 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
         }
     }
 
+    private func armSetupTimeout() {
+        setupTimeout?.cancel()
+        setupTimeout = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(EasyBLEProtocol.setupTimeout))
+            guard !Task.isCancelled else { return }
+            self?.fail("setup timeout after \(EasyBLEProtocol.setupTimeout)s")
+        }
+    }
+
     private func fail(_ reason: String) {
         easyBLELog.error("fail \(reason, privacy: .public) connected=\(self.sessionReady) sending=\(self.awaitingResult) offset=\(self.txOffset) outgoing=\(self.outgoing.count)")
         resetLink()
@@ -514,6 +534,7 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
         awaitingOfferAck = false
         awaitingChunkAck = false
         resultTimeout?.cancel()
+        setupTimeout?.cancel()
         parser.reset()
         channel?.end()
         channel = nil
