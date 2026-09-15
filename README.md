@@ -236,6 +236,16 @@ void setup() {
 
 `write` is all-or-nothing: it returns `length` when the whole block fits in the ring, or `0` and adds `length` to `droppedBytes()` when it does not. The phone sees each run of dropped bytes as one `.gap`. `close()` discards anything still in the ring and sends the end marker. Call `open`, `write`, and `close` from the same task as `update()`; the channel is not thread-safe.
 
+The phone acknowledges the end marker. `onClosed(true)` fires once the phone has received everything the device sent before `close()`; `onClosed(false)` fires if the link drops first or no acknowledgement arrives within 15 s. If the phone closes the channel at the same moment, its close counts as the acknowledgement. `close()` on an offer the phone has not seen yet sends nothing and does not call `onClosed`.
+
+```cpp
+void onClosed(bool acked) {
+  // acked: the phone has the whole stream
+}
+
+EasyBLE.channel().onClosed(onClosed);
+```
+
 On iOS the offer arrives as `EasyBLEIncomingChannel`. Accept it, then consume `bytes` or `events`.
 
 ```swift
@@ -263,7 +273,7 @@ ble.onChannelOpen { channel in
 ble.requestChannel()
 ```
 
-`channel.bytes` yields only `.data` payloads. `close()` declines an offer or tells the device to stop an accepted channel. Each `events` / `bytes` stream buffers at most `EasyBLEIncomingChannel.bufferedEventLimit` (256) events and drops the oldest when the consumer falls behind.
+`channel.bytes` yields only `.data` payloads. `close()` declines an offer or tells the device to stop an accepted channel. When the device ends the channel, the library acknowledges it automatically before `.ended` is delivered. Each `events` / `bytes` stream buffers at most `EasyBLEIncomingChannel.bufferedEventLimit` (256) events and drops the oldest when the consumer falls behind.
 
 See `libraries/EasyBLE/examples/AudioStream` for a microphone stream and `EasyBLEAudio` for the Mac-side decoder.
 
@@ -289,6 +299,7 @@ EasyBLE.isConnected();
 EasyBLEChannel& ch = EasyBLE.channel();
 ch.onEnabled(handler);               // void(bool)
 ch.onRequested(handler);             // void()
+ch.onClosed(handler);                // void(bool acked)
 ch.open(descriptor, length);         // optional ringSize, default 12 KB
 ch.write(data, length);
 ch.availableForWrite();

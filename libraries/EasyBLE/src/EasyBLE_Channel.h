@@ -9,9 +9,11 @@ class EasyBLEChannel {
 public:
   using EnabledHandler = void (*)(bool enabled);
   using RequestedHandler = void (*)();
+  using ClosedHandler = void (*)(bool acked);
 
   void onEnabled(EnabledHandler handler);
   void onRequested(RequestedHandler handler);
+  void onClosed(ClosedHandler handler);
 
   bool open(const uint8_t* descriptor, size_t length,
             size_t ringSize = EasyBLEDefaultChannelRing);
@@ -41,13 +43,16 @@ private:
   void ringPut(const uint8_t* data, size_t length);
   void ringGet(uint8_t* data, size_t length);
   void notifyEnabled(bool enabled);
+  void notifyClosed(bool acked);
 
   State _state = State::Closed;
   uint8_t _descriptor[EasyBLEProtocol::DataMaxPayload] = {};
   uint8_t _descriptorLength = 0;
   bool _pendingHeader = false;
   bool _pendingEnd = false;
+  bool _awaitingEndAck = false;
   uint32_t _offerStart = 0;
+  uint32_t _endStart = 0;
   uint8_t* _ring = nullptr;
   size_t _ringCapacity = 0;
   size_t _head = 0;
@@ -58,4 +63,5 @@ private:
   uint32_t _droppedTotal = 0;
   EnabledHandler _onEnabled = nullptr;
   RequestedHandler _onRequested = nullptr;
+  ClosedHandler _onClosed = nullptr;
 };

@@ -197,7 +197,7 @@ private func dataFrame(flags: UInt8, payload: Data) -> Data {
         secondBytes.append(data)
     }
 
-    #expect(controls == [true])
+    #expect(controls == [true, false])
     #expect(firstEvents.count == 3)
     if case .gap(let dropped) = firstEvents[0] { #expect(dropped == 480) } else { Issue.record("expected gap") }
     if case .data(let data) = firstEvents[1] { #expect(data == Data([1, 2, 3])) } else { Issue.record("expected data") }
@@ -205,7 +205,30 @@ private func dataFrame(flags: UInt8, payload: Data) -> Data {
     #expect(secondBytes == [Data([1, 2, 3])])
     #expect(channel.isEnded)
     channel.close()
-    #expect(controls == [true])
+    #expect(controls == [true, false])
+}
+
+@Test func incomingChannelAcknowledgesDeviceEndOnce() {
+    var controls: [Bool] = []
+    let channel = EasyBLEIncomingChannel(descriptor: Data()) { _, enabled in
+        controls.append(enabled)
+    }
+    channel.deliver(.ended)
+    channel.deliver(.ended)
+    channel.close()
+    #expect(controls == [false])
+    #expect(channel.isEnded)
+}
+
+@Test func incomingChannelDoesNotAcknowledgeAfterLocalClose() {
+    var controls: [Bool] = []
+    let channel = EasyBLEIncomingChannel(descriptor: Data()) { _, enabled in
+        controls.append(enabled)
+    }
+    channel.accept()
+    channel.close()
+    channel.deliver(.ended)
+    #expect(controls == [true, false])
 }
 
 @Test func incomingChannelCloseSendsControlOnce() {

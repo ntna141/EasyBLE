@@ -17,6 +17,7 @@ onSendResult	KEYWORD2
 channel	KEYWORD2
 onEnabled	KEYWORD2
 onRequested	KEYWORD2
+onClosed	KEYWORD2
 send	KEYWORD2
 sendText	KEYWORD2
 isSending	KEYWORD2

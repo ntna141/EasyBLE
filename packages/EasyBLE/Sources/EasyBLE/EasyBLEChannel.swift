@@ -67,6 +67,7 @@ public final class EasyBLEIncomingChannel {
     package func deliver(_ event: EasyBLEChannelEvent) {
         guard !isEnded else { return }
         if case .ended = event {
+            control(self, false)
             end()
             return
         }

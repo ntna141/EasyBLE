@@ -373,7 +373,7 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
         }
         channel.deliver(event)
         if case .ended = event {
-            easyBLELog.info("channel ended by device")
+            easyBLELog.info("channel ended by device, acknowledged")
             self.channel = nil
         }
     }

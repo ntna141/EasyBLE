@@ -13,3 +13,4 @@ node_modules/
 .env.*
 /internal-tests
 packages/EasyBLE/Sources/EasyBLEAudioCLI/
+packages/EasyBLE/Sources/VoiceNoteMac/

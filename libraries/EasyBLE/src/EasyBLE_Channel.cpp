@@ -16,6 +16,10 @@ void EasyBLEChannel::onRequested(RequestedHandler handler) {
   _onRequested = handler;
 }
 
+void EasyBLEChannel::onClosed(ClosedHandler handler) {
+  _onClosed = handler;
+}
+
 bool EasyBLEChannel::open(const uint8_t* descriptor, size_t length,
                           size_t ringSize) {
   if (_state != State::Closed || !EasyBLE.isConnected() ||
@@ -118,12 +122,17 @@ void EasyBLEChannel::releaseRing() {
 
 void EasyBLEChannel::reset() {
   const bool wasReady = _state == State::Ready;
+  const bool wasClosing = _pendingEnd || _awaitingEndAck;
   releaseRing();
   _pendingHeader = false;
   _pendingEnd = false;
+  _awaitingEndAck = false;
   _state = State::Closed;
   if (wasReady) {
     notifyEnabled(false);
+  }
+  if (wasClosing) {
+    notifyClosed(false);
   }
 }
 
@@ -133,8 +142,20 @@ void EasyBLEChannel::notifyEnabled(bool enabled) {
   }
 }
 
+void EasyBLEChannel::notifyClosed(bool acked) {
+  if (_onClosed != nullptr) {
+    _onClosed(acked);
+  }
+}
+
 void EasyBLEChannel::handleControl(bool enabled) {
   if (!enabled) {
+    if (_pendingEnd || _awaitingEndAck) {
+      _pendingEnd = false;
+      _awaitingEndAck = false;
+      notifyClosed(true);
+      return;
+    }
     reset();
     return;
   }
@@ -174,6 +195,12 @@ void EasyBLEChannel::pump(size_t floor) {
       return;
     }
     _pendingEnd = false;
+    _awaitingEndAck = true;
+    _endStart = millis();
+  }
+  if (_awaitingEndAck && millis() - _endStart >= ResultTimeoutMs) {
+    _awaitingEndAck = false;
+    notifyClosed(false);
   }
   if (_state == State::Closed) {
     return;
