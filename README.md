@@ -295,6 +295,7 @@ EasyBLE.send(type, data, length);
 EasyBLE.sendText(text);
 EasyBLE.isSending();
 EasyBLE.isConnected();
+EasyBLE.setLowPower(enabled);        // longer connection interval + slave latency; disable before streaming
 
 EasyBLEChannel& ch = EasyBLE.channel();
 ch.onEnabled(handler);               // void(bool)

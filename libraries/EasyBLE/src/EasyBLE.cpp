@@ -266,6 +266,10 @@ bool EasyBLEClass::isConnected() const {
   return _connected && !_failed && EasyBLEBackend::ready();
 }
 
+void EasyBLEClass::setLowPower(bool enabled) {
+  EasyBLEBackend::setLowPower(enabled);
+}
+
 void EasyBLEClass::processIncoming(const uint8_t* data, size_t length) {
   size_t offset = 0;
   while (offset < length && _connected && !_failed) {

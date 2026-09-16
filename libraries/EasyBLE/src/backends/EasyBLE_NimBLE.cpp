@@ -21,6 +21,34 @@ std::atomic<bool> rxOverflowed{false};
 std::atomic<bool> sessionEnded{false};
 std::atomic<uint16_t> pendingHandle{BLE_HS_CONN_HANDLE_NONE};
 std::atomic<uint32_t> pendingSince{0};
+bool lowPower = false;
+bool connParamsDirty = false;
+uint32_t connParamsAt = 0;
+
+void requestConnParams() {
+  connParamsDirty = true;
+  connParamsAt = millis() + EasyBLEProtocol::ConnParamsDelayMs;
+}
+
+void applyConnParams() {
+  NimBLEServer* server = NimBLEDevice::getServer();
+  const uint16_t handle = deviceToPhoneStream.getPeerHandle();
+  if (server == nullptr || handle == BLE_HS_CONN_HANDLE_NONE) {
+    connParamsDirty = false;
+    return;
+  }
+  if (!connParamsDirty || static_cast<int32_t>(millis() - connParamsAt) < 0) {
+    return;
+  }
+  connParamsDirty = false;
+  if (lowPower) {
+    server->updateConnParams(handle, EasyBLEProtocol::IdleIntervalMin, EasyBLEProtocol::IdleIntervalMax,
+                             EasyBLEProtocol::IdleLatency, EasyBLEProtocol::SupervisionTimeout);
+  } else {
+    server->updateConnParams(handle, EasyBLEProtocol::ActiveIntervalMin, EasyBLEProtocol::ActiveIntervalMax, 0,
+                             EasyBLEProtocol::SupervisionTimeout);
+  }
+}
 
 void discardSessionIo() {
   deviceToPhoneStream.flush();
@@ -154,7 +182,9 @@ void EasyBLEBackend::poll() {
 
   if (ready() && !EasyBLE._connected) {
     didConnect();
+    requestConnParams();
   }
+  applyConnParams();
 
   const uint16_t pending = pendingHandle.load();
   if (pending == BLE_HS_CONN_HANDLE_NONE) {
@@ -179,6 +209,14 @@ void EasyBLEBackend::disconnect() {
   if (server != nullptr && peerHandle != BLE_HS_CONN_HANDLE_NONE) {
     server->disconnect(peerHandle);
   }
+}
+
+void EasyBLEBackend::setLowPower(bool enabled) {
+  if (lowPower == enabled) {
+    return;
+  }
+  lowPower = enabled;
+  requestConnParams();
 }
 
 bool EasyBLEBackend::ready() {

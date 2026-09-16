@@ -9,6 +9,7 @@ struct EasyBLEBackend {
   static void end();
   static void poll();
   static void disconnect();
+  static void setLowPower(bool enabled);
   static bool ready();
   static bool rxInvalid();
 

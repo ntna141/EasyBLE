@@ -32,6 +32,13 @@ constexpr size_t DataMaxPayload = 240;
 constexpr uint16_t ChunkPayloadSize = 3072;
 constexpr uint32_t ResultTimeoutMs = 15000;
 constexpr uint32_t SetupTimeoutMs = 10000;
+constexpr uint16_t ActiveIntervalMin = 12;
+constexpr uint16_t ActiveIntervalMax = 24;
+constexpr uint16_t IdleIntervalMin = 24;
+constexpr uint16_t IdleIntervalMax = 48;
+constexpr uint16_t IdleLatency = 9;
+constexpr uint16_t SupervisionTimeout = 400;
+constexpr uint32_t ConnParamsDelayMs = 2000;
 
 inline uint32_t readUint32(const uint8_t* data) {
   return static_cast<uint32_t>(data[0]) |

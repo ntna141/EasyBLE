@@ -60,6 +60,7 @@ public:
   bool sendText(const char* text);
   bool isSending() const;
   bool isConnected() const;
+  void setLowPower(bool enabled);
 
 private:
   friend struct EasyBLEBackend;
