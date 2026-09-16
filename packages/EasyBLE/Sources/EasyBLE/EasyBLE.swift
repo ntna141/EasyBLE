@@ -119,7 +119,7 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
             easyBLELog.info("offer type=\(typeName, privacy: .public) bytes=\(data.count)")
             enqueue(EasyBLEProtocol.offerFrame(type: type, length: data.count))
         } else {
-            pumpWrites()
+            enqueueNextFrame()
         }
         return true
     }
@@ -413,8 +413,7 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
             return
         }
         awaitingChunkAck = false
-        armResultTimeout()
-        pumpWrites()
+        enqueueNextFrame()
     }
 
     private func receivedResult(_ status: UInt8) {
@@ -431,8 +430,7 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
             }
             awaitingOfferAck = false
             easyBLELog.info("offer accepted")
-            armResultTimeout()
-            pumpWrites()
+            enqueueNextFrame()
             return
         }
         if status == 1, txPayload != nil {
@@ -453,8 +451,8 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
         sendResultHandler?(success)
     }
 
-    private func nextFrame() -> Data? {
-        guard let payload = txPayload else { return nil }
+    private func enqueueNextFrame() {
+        guard let payload = txPayload else { return }
         let frame = EasyBLEProtocol.frame(type: txType, payload: payload, offset: txOffset)
         let offset = txOffset
         txOffset += min(EasyBLEProtocol.chunkPayloadSize, payload.count - txOffset)
@@ -465,7 +463,7 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
             awaitingChunkAck = true
         }
         armResultTimeout()
-        return frame
+        enqueue(frame)
     }
 
     private func pumpWrites() {
@@ -473,21 +471,16 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
             easyBLELog.error("pumpWrites blocked peripheral=\(self.peripheral != nil) characteristic=\(self.phoneToDevice != nil) outgoing=\(self.outgoing.count)")
             return
         }
-        let writeType: CBCharacteristicWriteType =
-            phoneToDevice.properties.contains(.writeWithoutResponse) ? .withoutResponse : .withResponse
+        let canWriteWithoutResponse = phoneToDevice.properties.contains(.writeWithoutResponse)
 
-        while true {
-            if outgoing.isEmpty {
-                if awaitingOfferAck || awaitingChunkAck {
-                    return
-                }
-                guard let frame = nextFrame() else { return }
-                outgoing = frame
-            }
-            if writeType == .withoutResponse {
-                guard peripheral.canSendWriteWithoutResponse else { return }
+        while !outgoing.isEmpty {
+            let writeType: CBCharacteristicWriteType
+            if canWriteWithoutResponse && peripheral.canSendWriteWithoutResponse {
+                writeType = .withoutResponse
             } else if writeInFlight {
                 return
+            } else {
+                writeType = .withResponse
             }
             let maxLength = max(1, peripheral.maximumWriteValueLength(for: writeType))
             let chunk = Data(outgoing.prefix(maxLength))
