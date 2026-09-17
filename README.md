@@ -1,4 +1,12 @@
-# Library to make building companion ESP32 devices easier
+# Make portable projects easier
+
+## Why BLE over Wifi for ESP32 devices?
+
+Wifi might be generally faster, but there is so much friction to setting it up and pairing it with your phone, especially if you are making something to bring outside (public transit schedule checker, agent monitor,...). Bluetooth events can wake your app in the background to sync data when you want to without ever having to hard code your home Wifi creds in the script. 
+
+Also, all of the workload you might ever send to and from this device is probably a few kilobytes, which will be sent in a couple of seconds at most.
+
+## Features
 
 - Pair iOS apps with ESP32 companion devices over BLE
 - Send and receive text or image payloads (that your device can hold in memory)
