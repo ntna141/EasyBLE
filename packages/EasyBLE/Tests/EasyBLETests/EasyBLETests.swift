@@ -93,18 +93,6 @@ private func dataFrame(flags: UInt8, payload: Data) -> Data {
     #expect(failed)
 }
 
-@Test func offerFrameEncodesTypeAndLength() {
-    let frame = EasyBLEProtocol.offerFrame(type: .image, length: 7034)
-    #expect(frame.count == 6)
-    #expect(frame[0] == EasyBLEProtocol.offer)
-    #expect(frame[1] == EasyBLEMessageType.image.rawValue)
-    let length = UInt32(frame[2])
-        | (UInt32(frame[3]) << 8)
-        | (UInt32(frame[4]) << 16)
-        | (UInt32(frame[5]) << 24)
-    #expect(length == 7034)
-}
-
 @Test func parserReportsContinueWithoutBegin() {
     let parser = StreamParser()
     var failed = false

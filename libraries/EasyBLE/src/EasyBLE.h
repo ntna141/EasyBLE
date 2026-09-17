@@ -112,10 +112,8 @@ private:
   size_t _rxChunkReceived = 0;
   uint8_t _rxHeader[4] = {};
   uint8_t _rxHeaderLength = 0;
-  uint8_t _rxHeaderOpcode = 0;
   bool _rxDiscard = false;
   bool _rxStreaming = false;
-  bool _rxOffered = false;
   RxParseState _rxState = RxParseState::Opcode;
 
   uint8_t* _txMessage = nullptr;

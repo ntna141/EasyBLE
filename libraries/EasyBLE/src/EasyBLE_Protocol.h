@@ -12,7 +12,6 @@ constexpr char DeviceToPhoneUUID[] = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E";
 constexpr uint8_t OpcodeResult = 0x02;
 constexpr uint8_t OpcodeBegin = 0x03;
 constexpr uint8_t OpcodeContinue = 0x04;
-constexpr uint8_t OpcodeOffer = 0x05;
 constexpr uint8_t OpcodeAck = 0x06;
 constexpr uint8_t OpcodeData = 0x07;
 constexpr uint8_t OpcodeControl = 0x08;

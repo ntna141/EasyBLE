@@ -26,7 +26,6 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
     private var txType = EasyBLEMessageType.text
     private var txOffset = 0
     private var awaitingResult = false
-    private var awaitingOfferAck = false
     private var awaitingChunkAck = false
     private var resultTimeout: Task<Void, Never>?
     private var setupTimeout: Task<Void, Never>?
@@ -113,14 +112,7 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
         txPayload = data
         txType = type
         txOffset = 0
-        awaitingOfferAck = data.count > EasyBLEProtocol.offerThreshold
-        armResultTimeout()
-        if awaitingOfferAck {
-            easyBLELog.info("offer type=\(typeName, privacy: .public) bytes=\(data.count)")
-            enqueue(EasyBLEProtocol.offerFrame(type: type, length: data.count))
-        } else {
-            enqueueNextFrame()
-        }
+        enqueueNextFrame()
         return true
     }
 
@@ -417,20 +409,9 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
     }
 
     private func receivedResult(_ status: UInt8) {
-        easyBLELog.info("result status=\(status) offer=\(self.awaitingOfferAck) awaiting=\(self.awaitingResult) remaining=\(self.txPayload?.count ?? 0)")
+        easyBLELog.info("result status=\(status) awaiting=\(self.awaitingResult) remaining=\(self.txPayload?.count ?? 0)")
         guard awaitingResult, status <= 1 else {
             fail("unexpected result status=\(status) awaiting=\(awaitingResult)")
-            return
-        }
-        if awaitingOfferAck {
-            if status != 1 {
-                easyBLELog.error("offer rejected")
-                finishSend(false)
-                return
-            }
-            awaitingOfferAck = false
-            easyBLELog.info("offer accepted")
-            enqueueNextFrame()
             return
         }
         if status == 1, txPayload != nil {
@@ -443,7 +424,6 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
     private func finishSend(_ success: Bool) {
         easyBLELog.info("send finished success=\(success)")
         awaitingResult = false
-        awaitingOfferAck = false
         awaitingChunkAck = false
         resultTimeout?.cancel()
         txPayload = nil
@@ -524,7 +504,6 @@ public final class EasyBLE: NSObject, CBCentralManagerDelegate, CBPeripheralDele
         let sendUnresolved = awaitingResult
         sessionReady = false
         awaitingResult = false
-        awaitingOfferAck = false
         awaitingChunkAck = false
         resultTimeout?.cancel()
         setupTimeout?.cancel()
