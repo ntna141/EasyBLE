@@ -15,6 +15,11 @@ Also, all of the workload you might ever send to and from this device is probabl
 - Simple callbacks for connect, disconnect, and results
 - Automatic reconnect after the accessory is paired
 
+## Demos
+
+- [VoiceNotes](https://github.com/ntna141/VoiceNotes): pocket e-ink voice recorder and mood tracker. Mic audio is streamed live to the iPhone over a `channel()` and transcribed.
+- [xiao-clock](https://github.com/ntna141/xiao-clock): round-display desk clock with an iOS watch face editor. Face bundles are streamed to the SD card with `onStream`.
+
 ## Install
 
 ### iOS (Xcode)
